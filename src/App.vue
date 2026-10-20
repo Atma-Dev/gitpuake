@@ -238,13 +238,32 @@ const recent = ref(JSON.parse(localStorage.getItem('recent') || '[]'))
 const saveRecent = list => localStorage.setItem('recent', JSON.stringify((recent.value = list)))
 const forget = path => saveRecent(recent.value.filter(r => r !== path))
 
+// Open repositories as tabs; each keeps its own undo history while the app runs.
+const tabs = ref(JSON.parse(localStorage.getItem('tabs') || 'null') ?? (repo.value ? [repo.value] : []))
+const saveTabs = list => localStorage.setItem('tabs', JSON.stringify((tabs.value = list)))
+const undoStore = {}
+function closeTab(path) {
+  const i = tabs.value.indexOf(path)
+  saveTabs(tabs.value.filter(t => t !== path))
+  delete undoStore[path]
+  if (path !== repo.value) return
+  const next = tabs.value[Math.min(i, tabs.value.length - 1)]
+  if (next) openPath(next)
+  else {
+    undos.value = []
+    goHome()
+  }
+}
+
 async function openPath(dir) {
   try {
     const top = (await invoke('git', { repo: dir, args: ['rev-parse', '--show-toplevel'] })).trim()
+    if (repo.value) undoStore[repo.value] = undos.value
     repo.value = top
     localStorage.setItem('repo', top)
     saveRecent([top, ...recent.value.filter(r => r !== top)].slice(0, 8))
-    undos.value = []
+    if (!tabs.value.includes(top)) saveTabs([...tabs.value, top])
+    undos.value = undoStore[top] ?? []
     query.value = ''
     selected.value = 'WIP'
     diff.value = fileView.value = plan.value = null
@@ -258,6 +277,7 @@ async function openRepo() {
   if (dir) openPath(dir)
 }
 function goHome() {
+  if (repo.value) undoStore[repo.value] = undos.value
   repo.value = ''
   localStorage.removeItem('repo')
   commits.value = []
@@ -555,12 +575,18 @@ onMounted(() => {
 <template>
   <Welcome v-if="!repo" :recent="recent" @open="openPath" @forget="forget" @error="e => (error = e)" />
   <div v-else class="app">
+    <nav class="tabs" aria-label="Repository terbuka">
+      <button class="home" title="Halaman awal" @click="goHome"><img :src="logo" alt="gitpuake" /></button>
+      <div v-for="t in tabs" :key="t" class="tab" :class="{ on: t === repo }" :title="t">
+        <button class="tab-name" @click="t !== repo && openPath(t)" @auxclick.middle="closeTab(t)">
+          {{ t.split('/').at(-1) }}<small v-if="t === repo && head"> ⎇ {{ head }}</small>
+        </button>
+        <button class="tab-close" :aria-label="'Tutup ' + t.split('/').at(-1)" @click="closeTab(t)">✕</button>
+      </div>
+      <button class="tab-add" title="Buka repository lain" @click="openRepo">+</button>
+    </nav>
     <header class="toolbar">
-      <button class="home" title="Kembali ke halaman awal" @click="goHome"><img :src="logo" alt="gitpuake" /></button>
-      <button @click="openRepo">📂 Open</button>
-      <span class="repo" :title="repo">{{ repo ? repo.split('/').at(-1) : 'Belum ada repo' }}</span>
       <template v-if="repo">
-        <span class="sep" />
         <button :disabled="!!busy" :title="'Fetch otomatis tiap 5 menit' + (lastFetch ? '. Terakhir: ' + ago(lastFetch / 1000) : '')" @click="fetchAll">⟳ Fetch</button>
         <button :disabled="!!busy" @click="pull">↓ Pull<b v-if="headTrack.behind" class="count">{{ headTrack.behind }}</b></button>
         <button :disabled="!!busy" @click="push">↑ Push<b v-if="headTrack.ahead" class="count">{{ headTrack.ahead }}</b></button>
@@ -958,10 +984,38 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 
 .app {
   display: grid;
-  grid-template: 44px auto minmax(0, 1fr) / 230px minmax(0, 1fr) 340px;
+  grid-template: 38px 44px auto minmax(0, 1fr) / 230px minmax(0, 1fr) 340px;
   height: 100vh;
 }
-.sidebar, .main, .panel { grid-row: 3; }
+.sidebar, .main, .panel { grid-row: 4; }
+.op-banner { grid-row: 3; }
+.tabs {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 8px;
+  background: #09100c;
+  overflow-x: auto;
+}
+.tabs .home { align-self: center; margin-right: 6px; }
+.tabs .home img { width: 26px; height: 26px; }
+.tab {
+  display: flex;
+  align-items: center;
+  max-width: 240px;
+  height: 32px;
+  border-radius: 6px 6px 0 0;
+  background: #111b15;
+  color: var(--dim);
+}
+.tab.on { background: var(--bg2); color: var(--bone); box-shadow: inset 0 2px var(--accent); }
+.tab button { border: 0; background: none; color: inherit; }
+.tab-name { padding: 0 4px 0 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-name small { color: var(--accent); }
+.tab-close { padding: 0 8px; opacity: 0.5; }
+.tab-close:hover { opacity: 1; color: #f2665b; }
+.tab-add { align-self: center; margin-left: 4px; padding: 1px 9px; }
 .op-banner {
   grid-column: 1 / -1;
   display: flex;
@@ -1094,7 +1148,6 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
   background: var(--bg2);
   border-bottom: 1px solid #000;
 }
-.repo { font-weight: 600; }
 .head { color: var(--accent); }
 .busy { color: var(--dim); }
 .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
