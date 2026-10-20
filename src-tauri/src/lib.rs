@@ -11,6 +11,8 @@ fn exec(program: &str, repo: &str, args: &[String], input: Option<String>) -> Re
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0") // fail fast instead of hanging on credential prompts
         .env("GH_PROMPT_DISABLED", "1")
+        .env("NO_PROMPT", "1") // glab
+        .env("NO_COLOR", "1")
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -36,6 +38,34 @@ async fn git(repo: String, args: Vec<String>, input: Option<String>) -> Result<S
 #[tauri::command]
 async fn gh(repo: String, args: Vec<String>) -> Result<String, String> {
     exec("gh", &repo, &args, None)
+}
+
+// GitLab CLI, for merge requests and issues; it uses the user's own `glab auth login`.
+#[tauri::command]
+async fn glab(repo: String, args: Vec<String>) -> Result<String, String> {
+    exec("glab", &repo, &args, None)
+}
+
+fn is_web_url(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://")) && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+// Opens an http(s) URL in the system browser (e.g. a Bitbucket pull request page).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !is_web_url(&url) {
+        return Err(format!("{url}: bukan URL http(s)"));
+    }
+    let (program, pre): (&str, &[&str]) = if cfg!(windows) {
+        ("rundll32", &["url.dll,FileProtocolHandler"])
+    } else if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else {
+        ("xdg-open", &[])
+    };
+    let mut child = Command::new(program).args(pre).arg(&url).spawn().map_err(|e| format!("{program}: {e}"))?;
+    std::thread::spawn(move || child.wait()); // reap it so no zombie is left behind
+    Ok(())
 }
 
 // Resolves `path` (relative to `repo`) to an existing file inside the repository,
@@ -67,14 +97,22 @@ fn write_file(repo: String, path: String, content: String) -> Result<(), String>
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![git, gh, read_file, write_file])
+        .invoke_handler(tauri::generate_handler![git, gh, glab, open_url, read_file, write_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::repo_file;
+    use super::{is_web_url, repo_file};
+
+    #[test]
+    fn open_url_only_takes_web_urls() {
+        assert!(is_web_url("https://bitbucket.org/ws/repo/pull-requests/new?source=a%2Fb"));
+        assert!(!is_web_url("file:///etc/passwd"));
+        assert!(!is_web_url("javascript:alert(1)"));
+        assert!(!is_web_url("https://x.org/a b"));
+    }
 
     #[test]
     fn repo_file_stays_inside_repo() {

@@ -10,6 +10,9 @@ import { highlightRows } from './highlight.js'
 import { parseConflicts, compose } from './merge.js'
 import { ACTIONS, buildTodo, validate } from './rebase.js'
 import Welcome from './Welcome.vue'
+import Forge from './Forge.vue'
+import PRView from './PRView.vue'
+import { parseRemote } from './forge.js'
 import logo from './assets/puake.svg'
 
 const ROW = 34
@@ -269,9 +272,8 @@ async function openPath(dir) {
     query.value = ''
     selected.value = 'WIP'
     diff.value = fileView.value = plan.value = mergeView.value = null
-    prs.value = null
+    prView.value = null
     await refresh()
-    loadPRs()
   } catch (e) {
     error.value = `${dir} bukan git repository. Pilih folder yang berisi .git, atau buat repository baru.`
   }
@@ -527,7 +529,7 @@ async function autoFetch() {
     await g('fetch', '--all', '--prune', '--quiet')
     lastFetch.value = Date.now()
     await refresh()
-    loadPRs()
+    forgeEl.value?.load()
   } catch {}
 }
 
@@ -549,44 +551,16 @@ function scrollToCommit(hash) {
   if (i >= 0 && mainEl.value) mainEl.value.scrollTop = (i + 1) * ROW - mainEl.value.clientHeight / 2
 }
 // returning from a diff/plan/file view re-mounts the history; resync the window
-watch([diff, plan, fileView, mergeView], () => nextTick(() => mainEl.value && onScroll()))
+watch([diff, plan, fileView, mergeView, prView], () => nextTick(() => mainEl.value && onScroll()))
 const pull = () => act('Pull', ['pull'], p => resetBack(p.hash))
-// GitHub pull requests through the user's `gh` CLI.
-const isGitHub = computed(() => remotes.value.some(r => /github\.com/.test(r.url)))
-const prs = ref(null) // null | { list } | { error: 'missing' | 'auth' | message }
-const prForm = ref(null) // { title, body, base, draft } while creating a PR
-const ghCall = (...args) => invoke('gh', { repo: repo.value, args })
-async function loadPRs() {
-  if (!isGitHub.value) return (prs.value = null)
-  try {
-    const out = await ghCall('pr', 'list', '--state', 'open', '--limit', '50', '--json', 'number,title,author,headRefName,baseRefName,isDraft,reviewDecision,url')
-    prs.value = { list: JSON.parse(out) }
-  } catch (e) {
-    const msg = String(e)
-    prs.value = { error: /^gh: .*(No such file|os error 2)/.test(msg) ? 'missing' : /auth login|not logged/i.test(msg) ? 'auth' : msg }
-  }
+// Pull/merge requests and issues: sidebar in Forge.vue, GitHub PR detail in PRView.vue.
+const forge = computed(() => parseRemote(remotes.value.find(r => r.name === firstRemote())?.url))
+const forgeEl = ref(null)
+const prView = ref(null) // number of the PR shown in the main area
+const openPR = n => {
+  diff.value = fileView.value = null
+  prView.value = n
 }
-async function checkoutPR(pr) {
-  const prev = await prevHead()
-  run('Checkout PR #' + pr.number, () => ghCall('pr', 'checkout', String(pr.number)), () => goBack(prev))
-}
-const openPRWeb = pr => ghCall('pr', 'view', String(pr.number), '--web').catch(e => (error.value = String(e)))
-async function openPRForm() {
-  const base = (await g('symbolic-ref', '-q', '--short', `refs/remotes/${firstRemote()}/HEAD`)).trim().split('/').slice(1).join('/')
-  const title = (await g('log', '-1', '--format=%s')).trim()
-  prForm.value = { title, body: '', base: base || 'main', draft: false }
-}
-function createPR() {
-  const { title, body, base, draft } = prForm.value
-  prForm.value = null
-  run('Buat PR', async () => {
-    await g('push', '-u', firstRemote(), 'HEAD') // gh needs the branch on GitHub first
-    const url = await ghCall('pr', 'create', '--title', title, '--body', body, '--base', base, '--head', head.value, ...(draft ? ['--draft'] : []))
-    info.value = 'Pull request dibuat: ' + url.trim()
-    await loadPRs()
-  })
-}
-const REVIEW = { APPROVED: '✓ disetujui', CHANGES_REQUESTED: '✗ perlu perubahan', REVIEW_REQUIRED: 'menunggu review' }
 
 const firstRemote = () => remotes.value.find(r => r.name === 'origin')?.name ?? remotes.value[0]?.name ?? 'origin'
 const push = () =>
@@ -669,7 +643,7 @@ onMounted(() => {
         <button :disabled="!!busy || !stashes.length" @click="stashDo('pop', stashes[0])">⊟ Pop</button>
         <span class="sep" />
         <span class="head">⎇ {{ head || '(detached)' }}</span>
-        <button v-if="isGitHub && head" :disabled="!!busy" title="Push branch ini lalu buat pull request di GitHub" @click="openPRForm">⇪ Buat PR</button>
+        <button v-if="forge?.forge && head" :disabled="!!busy" title="Push branch ini lalu buat pull request" @click="forgeEl.openPRForm()">⇪ Buat {{ forge.forge === 'gitlab' ? 'MR' : 'PR' }}</button>
         <span v-if="busy" class="busy">{{ busy }}…</span>
         <span class="spacer" />
         <button :disabled="!undos.length || !!busy" :title="undos.length ? 'Undo: ' + undos.at(-1).label + ' (Ctrl+Z)' : 'Belum ada yang bisa di-undo'" @click="undo">
@@ -754,30 +728,21 @@ onMounted(() => {
           </span>
         </div>
       </template>
-      <template v-if="isGitHub">
-        <h4>Pull Request <button title="Muat ulang" @click="loadPRs">⟳</button></h4>
-        <p v-if="!prs" class="hint">Memuat…</p>
-        <p v-else-if="prs.error === 'missing'" class="hint">
-          Pasang GitHub CLI (<code>gh</code>), lalu jalankan <code>gh auth login</code> untuk melihat dan membuat pull request.
-        </p>
-        <p v-else-if="prs.error === 'auth'" class="hint">Jalankan <code>gh auth login</code> di terminal, lalu klik ⟳.</p>
-        <p v-else-if="prs.error" class="hint" :title="prs.error">Gagal memuat pull request: {{ prs.error.split('\n')[0] }}</p>
-        <p v-else-if="!prs.list.length" class="hint">Tidak ada pull request terbuka.</p>
-        <div v-for="pr in prs?.list ?? []" :key="pr.number" class="branch pr" :title="pr.title" @dblclick="checkoutPR(pr)">
-          <span class="name">
-            <span class="pr-title"><b>#{{ pr.number }}</b> {{ pr.title }}</span>
-            <small>
-              {{ pr.headRefName }} → {{ pr.baseRefName }} · {{ pr.author?.login }}
-              <template v-if="pr.isDraft"> · draft</template>
-              <template v-else-if="REVIEW[pr.reviewDecision]"> · {{ REVIEW[pr.reviewDecision] }}</template>
-            </small>
-          </span>
-          <span class="actions">
-            <button title="Checkout branch PR ini" @click="checkoutPR(pr)">⎇</button>
-            <button title="Buka di browser" @click="openPRWeb(pr)">↗</button>
-          </span>
-        </div>
-      </template>
+      <Forge
+        ref="forgeEl"
+        :repo="repo"
+        :forge="forge"
+        :remote="firstRemote()"
+        :head="head"
+        :g="g"
+        :run="run"
+        :prev-head="prevHead"
+        :go-back="goBack"
+        @error="e => (error = e)"
+        @info="m => (info = m)"
+        @branch="name => newBranchAt(name, [])"
+        @open-pr="openPR"
+      />
       <p class="hint">Double-click branch untuk checkout · klik kanan commit untuk aksi lain</p>
     </aside>
 
@@ -943,6 +908,17 @@ onMounted(() => {
           </template>
         </DiffView>
       </div>
+      <PRView
+        v-else-if="prView"
+        :repo="repo"
+        :n="prView"
+        :mode="diffMode"
+        :busy="busy"
+        :run="run"
+        @mode="setDiffMode"
+        @close="prView = null"
+        @changed="forgeEl?.load()"
+      />
       <div v-else class="history">
         <div class="cols">
           <span :style="{ width: REFS + 'px' }">Branch / Tag</span>
@@ -1074,22 +1050,6 @@ onMounted(() => {
         <button @click="copyHash">Salin hash</button>
       </template>
     </div>
-  </div>
-
-  <div v-if="prForm" class="dialog-backdrop" @click.self="prForm = null" @keydown.esc="prForm = null">
-    <form class="dialog" @submit.prevent="createPR">
-      <h3>Buat pull request</h3>
-      <p class="dialog-sub">Branch <b>{{ head }}</b> akan di-push dulu, lalu PR dibuat ke branch tujuan.</p>
-      <label>Branch tujuan <input v-model="prForm.base" /></label>
-      <p v-if="prForm.base.trim() === head" class="plan-error">Branch tujuan sama dengan branch ini. Buat branch baru untuk perubahanmu dulu.</p>
-      <label>Judul <input v-model="prForm.title" v-focus /></label>
-      <label>Deskripsi <textarea v-model="prForm.body" rows="6" placeholder="Apa yang berubah dan kenapa" /></label>
-      <label class="amend"><input v-model="prForm.draft" type="checkbox" /> Buat sebagai draft</label>
-      <span class="form-actions">
-        <button type="button" @click="prForm = null">Batal</button>
-        <button class="primary" :disabled="!prForm.title.trim() || !prForm.base.trim() || prForm.base.trim() === head">Push & buat PR</button>
-      </span>
-    </form>
   </div>
 
   <div v-if="info" class="error info" @click="info = ''">
