@@ -10,6 +10,9 @@ import { highlightRows } from './highlight.js'
 import { parseConflicts, compose } from './merge.js'
 import { ACTIONS, buildTodo, validate } from './rebase.js'
 import Welcome from './Welcome.vue'
+import Settings from './Settings.vue'
+import { settings } from './settings.js'
+import { readIdentity, parseSig, avatar } from './identity.js'
 import logo from './assets/puake.svg'
 
 const ROW = 34
@@ -17,7 +20,6 @@ const LANE = 22
 const REFS = 180
 const COLORS = ['#2fb7f5', '#e65c9c', '#8ee05b', '#f5a623', '#a77bf3', '#36d6c3', '#f2665b', '#d6d14a']
 const MAX_COMMITS = 20000 // ponytail: whole log is held in memory; page with --skip if bigger histories matter
-const AUTO_FETCH_MS = 5 * 60 * 1000
 const OVERSCAN = 15 // extra rows rendered above/below the viewport
 
 const repo = ref(localStorage.getItem('repo') || '')
@@ -40,7 +42,10 @@ const tags = ref([]) // [{ name, oid, commit }]
 const remoteForm = ref(null) // { name, url } while adding a remote
 const amend = ref(false)
 const menu = ref(null) // commit context menu: { x, y, hash, input, value }
-const diffMode = ref(localStorage.getItem('diffMode') || 'split')
+const diffMode = computed(() => settings.diffMode)
+const showSettings = ref(false)
+const identity = ref(null) // effective user.name / user.email, shown in the commit box
+const sig = ref(null) // signature status of the selected commit
 
 const g = (...args) => invoke('git', { repo: repo.value, args })
 const gIn = (input, ...args) => invoke('git', { repo: repo.value, args, input })
@@ -187,6 +192,7 @@ function nextMatch(back) {
 
 async function refresh() {
   if (!repo.value) return
+  readIdentity(g).then(id => (identity.value = id))
   try {
     const [log, st, refs, cur, stash, ops, remoteUrls, tagRefs] = await Promise.all([
       // empty repo has no log; stashes are listed in the sidebar instead of the graph
@@ -301,6 +307,14 @@ async function selectCommit(hash) {
   })
 }
 
+// %G? runs gpg per signed commit, so it is only asked for the one commit on screen, not the whole log
+watch(selected, async h => {
+  sig.value = null
+  if (h === 'WIP') return
+  const s = parseSig(await g('log', '-1', '--format=%G?%x1f%GS', h).catch(() => ''))
+  if (selected.value === h) sig.value = s
+})
+
 async function showDiff(file, kind) {
   const p = file.path
   let text
@@ -317,7 +331,7 @@ async function showDiff(file, kind) {
   diff.value = { file, kind, d }
 }
 
-const setDiffMode = m => localStorage.setItem('diffMode', (diffMode.value = m))
+const setDiffMode = m => (settings.diffMode = m)
 // Untracked files have no index entry to patch, so they are staged whole.
 const hunkable = computed(() => diff.value && diff.value.kind !== 'commit' && !'UC'.includes(diff.value.file.code))
 // Applies hunk `h` of the open diff, or only its picked lines when some are picked.
@@ -625,11 +639,16 @@ async function deleteTag(t) {
   if (!(await ask(`Hapus tag "${t.name}" di lokal?`, { kind: 'warning' }))) return
   run('Hapus tag', () => g('tag', '-d', t.name), () => g('update-ref', 'refs/tags/' + t.name, t.oid))
 }
+let fetchTimer
+watch(() => settings.fetchMinutes, m => {
+  clearInterval(fetchTimer)
+  if (m) fetchTimer = setInterval(autoFetch, m * 60 * 1000)
+}, { immediate: true })
+
 const headTrack = computed(() => branches.value.track?.[head.value] ?? { ahead: 0, behind: 0 })
 
 onMounted(() => {
   refresh()
-  setInterval(autoFetch, AUTO_FETCH_MS)
   window.addEventListener('focus', refresh)
   window.addEventListener('click', () => (menu.value = null))
   window.addEventListener('keydown', e => {
@@ -661,7 +680,7 @@ onMounted(() => {
     </nav>
     <header class="toolbar">
       <template v-if="repo">
-        <button :disabled="!!busy" :title="'Fetch otomatis tiap 5 menit' + (lastFetch ? '. Terakhir: ' + ago(lastFetch / 1000) : '')" @click="fetchAll">⟳ Fetch</button>
+        <button :disabled="!!busy" :title="(settings.fetchMinutes ? 'Fetch otomatis tiap ' + settings.fetchMinutes + ' menit' : 'Fetch otomatis mati') + (lastFetch ? '. Terakhir: ' + ago(lastFetch / 1000) : '')" @click="fetchAll">⟳ Fetch</button>
         <button :disabled="!!busy" @click="pull">↓ Pull<b v-if="headTrack.behind" class="count">{{ headTrack.behind }}</b></button>
         <button :disabled="!!busy" @click="push">↑ Push<b v-if="headTrack.ahead" class="count">{{ headTrack.ahead }}</b></button>
         <span class="sep" />
@@ -684,6 +703,7 @@ onMounted(() => {
           @keydown.esc="query = ''"
         />
         <small v-if="matches" class="busy">{{ matches.size }} hasil</small>
+        <button title="Pengaturan" aria-label="Pengaturan" @click="showSettings = true">⚙</button>
       </template>
     </header>
 
@@ -988,7 +1008,7 @@ onMounted(() => {
             </span>
             <span :style="{ width: x(graphWidth) + 'px' }" class="gutter" />
             <span class="subject">{{ c.subject }}</span>
-            <span class="author">{{ c.author }}</span>
+            <span class="author"><img v-if="settings.avatars && avatar(c.email)" :src="avatar(c.email)" class="avatar" alt="" loading="lazy" />{{ c.author }}</span>
             <span class="date" :title="new Date(c.time * 1000).toLocaleString()">{{ ago(c.time) }}</span>
           </div>
         </div>
@@ -1030,6 +1050,10 @@ onMounted(() => {
         <div class="commit-box">
           <label class="amend"><input v-model="amend" type="checkbox" :disabled="!commits.length" /> Amend commit terakhir</label>
           <textarea v-model="msg" placeholder="Commit message (Ctrl+Enter)" @keydown.ctrl.enter="commit" />
+          <button class="who-am-i" title="Ganti identitas di Pengaturan" @click="showSettings = true">
+            <template v-if="identity?.name && identity?.email">Commit sebagai <b>{{ identity.name }}</b> &lt;{{ identity.email }}&gt;</template>
+            <template v-else-if="identity">Identitas git belum diatur, atur dulu</template>
+          </button>
           <button class="primary" :disabled="!msg.trim() || (!amend && !status.staged.length) || !!busy" @click="commit">
             {{ amend ? 'Amend commit' : `Commit ${status.staged.length} file` }}
           </button>
@@ -1039,8 +1063,10 @@ onMounted(() => {
         <div class="section">
           <h3>{{ selectedCommit.subject }}</h3>
           <p class="meta">
-            <code>{{ selectedCommit.hash.slice(0, 10) }}</code><br />
-            {{ selectedCommit.author }} · {{ new Date(selectedCommit.time * 1000).toLocaleString() }}
+            <code>{{ selectedCommit.hash.slice(0, 10) }}</code>
+            <span v-if="sig" class="sig" :class="sig.tone" :title="sig.signer ? 'Ditandatangani oleh ' + sig.signer : ''">{{ sig.code === 'G' ? '✓ ' : '' }}{{ sig.label }}</span><br />
+            <img v-if="settings.avatars && avatar(selectedCommit.email)" :src="avatar(selectedCommit.email)" class="avatar" alt="" loading="lazy" />
+            <span :title="selectedCommit.email">{{ selectedCommit.author }}</span> · {{ new Date(selectedCommit.time * 1000).toLocaleString() }}
           </p>
           <h4>File ({{ commitFiles.length }})</h4>
           <div v-for="f in commitFiles" :key="f.path" class="file" @click="showDiff(f, 'commit')">
@@ -1092,6 +1118,7 @@ onMounted(() => {
     </form>
   </div>
 
+  <Settings v-if="showSettings && repo" :repo="repo" :run="run" @close="showSettings = false" />
   <div v-if="info" class="error info" @click="info = ''">
     <pre>{{ info }}</pre>
     <small>klik untuk tutup</small>
@@ -1466,6 +1493,14 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .meta { color: var(--dim); }
 .commit-box { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid #000; }
 .commit-box textarea { height: 80px; resize: vertical; }
+.who-am-i { border: 0; background: none; padding: 0; text-align: left; color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-am-i:hover { color: var(--fg); }
+.who-am-i b { color: var(--fg); font-weight: 600; }
+.avatar { width: 18px; height: 18px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.sig { margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 11px; border: 1px solid; }
+.sig.ok { color: #8ee05b; }
+.sig.warn { color: var(--accent); }
+.sig.bad { color: #f2665b; }
 
 .diff-head {
   display: flex;

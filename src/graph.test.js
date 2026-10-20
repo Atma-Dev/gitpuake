@@ -3,10 +3,12 @@ import assert from 'node:assert/strict'
 import { parseLog, layout } from './graph.js'
 
 // M merges F (feature) into B; F and B both branch off A.
-const log = ['M\x1fB F\x1fHEAD -> main\x1fx\x1f3\x1fmerge', 'F\x1fA\x1f\x1fx\x1f2\x1ffeat', 'B\x1fA\x1f\x1fx\x1f2\x1fmain work', 'A\x1f\x1ftag: v1\x1fx\x1f1\x1froot'].join('\n')
+const log = ['M\x1fB F\x1fHEAD -> main\x1fx\x1fx@y\x1f3\x1fmerge', 'F\x1fA\x1f\x1fx\x1fx@y\x1f2\x1ffeat', 'B\x1fA\x1f\x1fx\x1fx@y\x1f2\x1fmain work', 'A\x1f\x1ftag: v1\x1fx\x1fx@y\x1f1\x1froot'].join('\n')
 const c = parseLog(log)
 assert.deepEqual(c[0].parents, ['B', 'F'])
 assert.deepEqual(c[0].refs, ['HEAD -> main'])
+assert.equal(c[0].email, 'x@y')
+assert.equal(c[0].time, 3)
 assert.equal(layout(c), 2)
 assert.deepEqual(c.map(x => x.col), [0, 1, 0, 0])
 assert.deepEqual(c[0].lines, [[0, 0, 'bottom'], [0, 1, 'bottom']])
