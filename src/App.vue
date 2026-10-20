@@ -7,6 +7,7 @@ import { parseDiff, hunkPatch, linesPatch } from './diff.js'
 import { parseBlame } from './blame.js'
 import DiffView from './DiffView.vue'
 import { highlightRows } from './highlight.js'
+import { parseConflicts, compose } from './merge.js'
 import { ACTIONS, buildTodo, validate } from './rebase.js'
 import Welcome from './Welcome.vue'
 import logo from './assets/puake.svg'
@@ -266,7 +267,7 @@ async function openPath(dir) {
     undos.value = undoStore[top] ?? []
     query.value = ''
     selected.value = 'WIP'
-    diff.value = fileView.value = plan.value = null
+    diff.value = fileView.value = plan.value = mergeView.value = null
     await refresh()
   } catch (e) {
     error.value = `${dir} bukan git repository. Pilih folder yang berisi .git, atau buat repository baru.`
@@ -281,7 +282,7 @@ function goHome() {
   repo.value = ''
   localStorage.removeItem('repo')
   commits.value = []
-  diff.value = fileView.value = plan.value = null
+  diff.value = fileView.value = plan.value = mergeView.value = null
 }
 
 async function selectCommit(hash) {
@@ -305,7 +306,7 @@ async function showDiff(file, kind) {
   else if (file.code === 'U' || file.code === 'C') text = await g('diff', '--no-index', '--', '/dev/null', p) // conflict: whole file with markers
   else text = await g('diff', '--', p)
   const d = parseDiff(text)
-  fileView.value = null
+  fileView.value = mergeView.value = null
   for (const h of d.hunks) {
     h.picked = new Set() // raw line indexes picked for line-level staging
     highlightRows(h.rows, p)
@@ -327,6 +328,38 @@ const discardHunk = async h => {
   if (!(await ask(h.picked.size ? `Buang ${h.picked.size} baris terpilih?` : 'Buang perubahan di hunk ini?', { kind: 'warning' }))) return
   applyHunk('Discard', h, ['--reverse'], patch => () => gIn(patch, 'apply', '-'))
 }
+
+// Conflict editor: { path, segs, manual } where manual is the hand-edited text (null = use choices).
+const mergeView = ref(null)
+const unresolved = computed(() => mergeView.value?.segs.filter(s => !s.lines && !s.choice).length ?? 0)
+const conflictCount = computed(() => mergeView.value?.segs.filter(s => !s.lines).length ?? 0)
+async function openMerge(f) {
+  try {
+    const text = await invoke('read_file', { repo: repo.value, path: f.path })
+    diff.value = fileView.value = null
+    mergeView.value = { path: f.path, segs: parseConflicts(text), manual: null }
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+const toggleManual = () => (mergeView.value.manual = mergeView.value.manual === null ? compose(mergeView.value.segs) : null)
+async function saveMerge() {
+  const { path, segs, manual } = mergeView.value
+  const content = manual ?? compose(segs)
+  if (content.includes('<<<<<<<') && !(await ask('Hasil masih berisi penanda conflict (<<<<<<<). Tetap simpan?', { kind: 'warning' }))) return
+  mergeView.value = null
+  // undo brings the conflict (markers and unmerged index entry) back
+  run(
+    'Resolve',
+    async () => {
+      await invoke('write_file', { repo: repo.value, path, content })
+      await g('add', '--', path)
+    },
+    () => g('checkout', '-m', '--', path),
+  )
+}
+// Long runs of agreed text are folded to their first and last lines.
+const fold = lines => (lines.length > 8 ? { head: lines.slice(0, 3), hidden: lines.length - 6, tail: lines.slice(-3) } : { head: lines, hidden: 0, tail: [] })
 
 const fileView = ref(null) // { type: 'history', path, items, sel, d } | { type: 'blame', path, rev, lines }
 async function openHistory(path) {
@@ -512,7 +545,7 @@ function scrollToCommit(hash) {
   if (i >= 0 && mainEl.value) mainEl.value.scrollTop = (i + 1) * ROW - mainEl.value.clientHeight / 2
 }
 // returning from a diff/plan/file view re-mounts the history; resync the window
-watch([diff, plan, fileView], () => nextTick(() => mainEl.value && onScroll()))
+watch([diff, plan, fileView, mergeView], () => nextTick(() => mainEl.value && onScroll()))
 const pull = () => act('Pull', ['pull'], p => resetBack(p.hash))
 const firstRemote = () => remotes.value.find(r => r.name === 'origin')?.name ?? remotes.value[0]?.name ?? 'origin'
 const push = () =>
@@ -685,7 +718,7 @@ onMounted(() => {
     <div v-if="operation" class="op-banner">
       <b>{{ { rebase: 'Rebase', merge: 'Merge', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[operation] }} sedang berlangsung.</b>
       <span v-if="status.conflicts.length">
-        {{ status.conflicts.length }} file conflict. Perbaiki di editor, lalu klik "Tandai selesai" di panel kanan.
+        {{ status.conflicts.length }} file conflict. Klik file di panel kanan untuk memilih versi yang dipakai.
       </span>
       <span v-else>Semua conflict sudah selesai.</span>
       <span class="spacer" />
@@ -731,6 +764,52 @@ onMounted(() => {
           <b>squash</b> menggabungkan commit ke commit di bawahnya dan menyimpan kedua pesannya. <b>fixup</b> juga menggabung,
           tapi pesannya dibuang. <b>reword</b> hanya mengganti judul commit. Hasil rebase bisa di-undo.
         </p>
+      </div>
+      <div v-else-if="mergeView" class="merge">
+        <div class="diff-head">
+          <b>Selesaikan conflict</b>
+          <span class="path">{{ mergeView.path }}</span>
+          <small v-if="mergeView.manual === null">{{ unresolved ? unresolved + ' dari ' + conflictCount + ' belum dipilih' : 'semua sudah dipilih' }}</small>
+          <span class="spacer" />
+          <button @click="toggleManual">{{ mergeView.manual === null ? 'Edit manual' : 'Kembali ke pilihan' }}</button>
+          <button @click="mergeView = null">Batal</button>
+          <button class="primary" :disabled="(mergeView.manual === null && unresolved > 0) || !!busy" @click="saveMerge">Simpan & tandai selesai</button>
+        </div>
+        <textarea v-if="mergeView.manual !== null" v-model="mergeView.manual" class="merge-manual" spellcheck="false" aria-label="Isi file hasil merge" />
+        <div v-else class="merge-body">
+          <template v-for="(sg, i) in mergeView.segs" :key="i">
+            <pre v-if="sg.lines" class="merge-common">{{ fold(sg.lines).head.join('\n') }}<template v-if="fold(sg.lines).hidden">
+<span class="folded">… {{ fold(sg.lines).hidden }} baris sama di kedua versi …</span>
+{{ fold(sg.lines).tail.join('\n') }}</template></pre>
+            <section v-else class="conflict" :class="{ done: sg.choice }">
+              <div class="sides">
+                <div class="side" :class="{ chosen: ['ours', 'both', 'both-rev'].includes(sg.choice), dropped: sg.choice === 'theirs' }">
+                  <header>
+                    <span>Versi <b>{{ sg.oursLabel || 'kamu' }}</b></span>
+                    <button :class="{ primary: sg.choice === 'ours' }" @click="sg.choice = 'ours'">Pakai ini</button>
+                  </header>
+                  <pre>{{ sg.ours.join('\n') || '(kosong)' }}</pre>
+                </div>
+                <div class="side" :class="{ chosen: ['theirs', 'both', 'both-rev'].includes(sg.choice), dropped: sg.choice === 'ours' }">
+                  <header>
+                    <span>Versi <b>{{ sg.theirsLabel || 'masuk' }}</b></span>
+                    <button :class="{ primary: sg.choice === 'theirs' }" @click="sg.choice = 'theirs'">Pakai ini</button>
+                  </header>
+                  <pre>{{ sg.theirs.join('\n') || '(kosong)' }}</pre>
+                </div>
+              </div>
+              <div class="conflict-foot">
+                <button :class="{ primary: sg.choice === 'both' }" @click="sg.choice = 'both'">Pakai keduanya, kiri dulu</button>
+                <button :class="{ primary: sg.choice === 'both-rev' }" @click="sg.choice = 'both-rev'">Pakai keduanya, kanan dulu</button>
+                <button v-if="sg.choice" @click="sg.choice = null">Batalkan pilihan</button>
+                <details v-if="sg.base" class="base">
+                  <summary>Lihat versi asal</summary>
+                  <pre>{{ sg.base.join('\n') || '(kosong)' }}</pre>
+                </details>
+              </div>
+            </section>
+          </template>
+        </div>
       </div>
       <div v-else-if="fileView" class="fileview">
         <div class="diff-head">
@@ -853,7 +932,7 @@ onMounted(() => {
       <template v-if="selected === 'WIP'">
         <div v-if="status.conflicts.length" class="section conflicts">
           <h4>Conflict ({{ status.conflicts.length }})</h4>
-          <div v-for="f in status.conflicts" :key="f.path" class="file" @click="showDiff(f, 'unstaged')">
+          <div v-for="f in status.conflicts" :key="f.path" class="file" title="Buka editor conflict" @click="openMerge(f)">
             <span class="code C">!</span>
             <span class="name" :title="f.path">{{ f.path }}</span>
             <button @click.stop="resolve(f.path)">Tandai selesai</button>
@@ -1081,6 +1160,46 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .lines .pickable:hover { filter: brightness(1.3); }
 .lines .picked { box-shadow: inset 3px 0 var(--accent); filter: brightness(1.45); }
 .hint-pick { color: var(--dim); font-style: italic; }
+
+.merge { display: flex; flex-direction: column; height: 100%; }
+.merge-body { padding: 10px; overflow: auto; }
+.merge-manual {
+  flex: 1;
+  margin: 10px;
+  width: auto;
+  resize: none;
+  font: 12px/1.55 ui-monospace, monospace;
+}
+.merge-common {
+  margin: 0;
+  padding: 4px 10px;
+  color: var(--dim);
+  font: 12px/1.55 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+.folded { color: #5c6272; font-style: italic; }
+.conflict { margin: 6px 0; border: 1px solid #f2665b; border-radius: 6px; overflow: hidden; }
+.conflict.done { border-color: var(--line); }
+.sides { display: grid; grid-template-columns: 1fr 1fr; }
+.side + .side { border-left: 1px solid var(--line); }
+.side header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--bg2);
+  color: var(--dim);
+}
+.side header b { color: var(--fg); }
+.side header button { padding: 1px 8px; font-size: 11px; }
+.side pre { margin: 0; padding: 6px 10px; font: 12px/1.55 ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+.side.chosen pre { background: #8ee05b14; }
+.side.dropped pre { opacity: 0.35; text-decoration: line-through; }
+.conflict-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); }
+.conflict-foot button { padding: 1px 8px; font-size: 11px; }
+.base { color: var(--dim); font-size: 12px; }
+.base pre { margin: 4px 0 0; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
 
 .remote-form { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 6px; }
