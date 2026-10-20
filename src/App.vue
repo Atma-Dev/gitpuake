@@ -18,7 +18,7 @@ const commits = ref([])
 const graphWidth = ref(1)
 const head = ref('')
 const branches = ref({ local: [], remote: [] })
-const status = ref({ staged: [], unstaged: [] })
+const status = ref({ staged: [], unstaged: [], conflicts: [] })
 const selected = ref('WIP')
 const commitFiles = ref([])
 const diff = ref(null)
@@ -35,7 +35,7 @@ const g = (...args) => invoke('git', { repo: repo.value, args })
 const gIn = (input, ...args) => invoke('git', { repo: repo.value, args, input })
 const vFocus = { mounted: el => el.focus() }
 const selectedCommit = computed(() => commits.value.find(c => c.hash === selected.value))
-const dirty = computed(() => status.value.staged.length + status.value.unstaged.length > 0)
+const dirty = computed(() => status.value.staged.length + status.value.unstaged.length + status.value.conflicts.length > 0)
 const x = i => LANE / 2 + 6 + i * LANE
 const color = i => COLORS[i % COLORS.length]
 const headRow = computed(() => commits.value.findIndex(c => c.refs.some(r => r === 'HEAD' || r.startsWith('HEAD -> '))))
@@ -75,11 +75,15 @@ function path([a, b, kind], r) {
   return `M${x(a)} ${y1} C${x(a)} ${ym} ${x(b)} ${ym} ${x(b)} ${y2}`
 }
 
-async function run(label, fn) {
+// ponytail: undo entries capture state when the action ran; git commands run outside the app can make them stale
+const undos = ref([]) // [{ label, undo }], newest last
+
+async function run(label, fn, undo) {
   busy.value = label
   error.value = ''
   try {
     await fn()
+    if (undo) undos.value = [...undos.value.slice(-19), { label, undo }]
   } catch (e) {
     error.value = String(e)
   }
@@ -87,39 +91,116 @@ async function run(label, fn) {
   await refresh()
 }
 
+function undo() {
+  const u = undos.value.at(-1)
+  if (!u || busy.value) return
+  undos.value = undos.value.slice(0, -1)
+  run('Undo ' + u.label.toLowerCase(), u.undo)
+}
+
+const headHash = async () => (await g('rev-parse', '-q', '--verify', 'HEAD')).trim()
+const prevHead = async () => ({ branch: head.value, hash: await headHash() })
+const goBack = p => (p.branch ? g('switch', p.branch) : g('switch', '--detach', p.hash))
+// Moves HEAD back; --keep refuses instead of overwriting uncommitted work.
+const resetBack = (hash, mode = '--keep') => () => (hash ? g('reset', mode, hash) : g('update-ref', '-d', 'HEAD'))
+
+// Discard = stash the changes, then drop the entry but keep its commit hash so undo can re-apply it.
+async function stashAway(paths) {
+  const before = (await g('rev-parse', '-q', '--verify', 'refs/stash')).trim()
+  await g('stash', 'push', '-u', '--keep-index', '-m', 'gitpuake discard', '--', ...paths)
+  const hash = (await g('rev-parse', '-q', '--verify', 'refs/stash')).trim()
+  if (!hash || hash === before) return '' // nothing was stashed; never drop the user's own stash
+  await g('stash', 'drop', '-q')
+  return hash
+}
+// Undo of stashAway: copy the stashed working-tree files back, leaving the index alone.
+// ponytail: a discarded file deletion is not re-deleted on undo
+async function unstashAway(hash) {
+  const lines = s => s.split('\0').filter(Boolean)
+  const tracked = lines(await g('diff', '--name-only', '-z', '--diff-filter=d', hash + '^1', hash))
+  if (tracked.length) await g('restore', '--source=' + hash, '--worktree', '--', ...tracked)
+  const untracked = (await g('rev-parse', '-q', '--verify', hash + '^3')).trim()
+  if (untracked) await g('restore', '--source=' + untracked, '--worktree', '--', ...lines(await g('ls-tree', '-r', '-z', '--name-only', untracked)))
+}
+
+const UNMERGED = ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']
 function parseStatus(out) {
-  const staged = [], unstaged = []
+  const staged = [], unstaged = [], conflicts = []
   const parts = out.split('\0')
   for (let i = 0; i < parts.length; i++) {
     const e = parts[i]
     if (!e) continue
     const [X, Y, path] = [e[0], e[1], e.slice(3)]
     if (X === 'R' || X === 'C') i++ // -z puts the rename source in the next entry
+    if (UNMERGED.includes(X + Y)) {
+      conflicts.push({ path, code: 'C' })
+      continue
+    }
     if (X !== ' ' && X !== '?') staged.push({ path, code: X })
     if (Y !== ' ') unstaged.push({ path, code: Y === '?' ? 'U' : Y })
   }
-  return { staged, unstaged }
+  return { staged, unstaged, conflicts }
+}
+
+const OPS = { MERGE_HEAD: 'merge', CHERRY_PICK_HEAD: 'cherry-pick', REVERT_HEAD: 'revert' }
+const operation = ref('') // in-progress merge / cherry-pick / revert
+const resolve = p => run('Resolve', () => g('add', '--', p))
+const abortOp = async () => {
+  if (await ask(`Batalkan ${operation.value}? Repo kembali ke kondisi sebelum ${operation.value} dimulai.`, { kind: 'warning' }))
+    run('Abort', () => g(operation.value, '--abort'))
+}
+const continueOp = () =>
+  run('Continue', () =>
+    operation.value === 'merge' ? g('commit', '--no-edit') : g('-c', 'core.editor=true', operation.value, '--continue'),
+  )
+
+const query = ref('')
+const searchEl = ref(null)
+const matches = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return null
+  return new Set(
+    commits.value
+      .filter(c => c.subject.toLowerCase().includes(q) || c.author.toLowerCase().includes(q) || c.hash.startsWith(q))
+      .map(c => c.hash),
+  )
+})
+function nextMatch(back) {
+  const list = commits.value.filter(c => matches.value?.has(c.hash))
+  if (!list.length) return
+  const i = list.findIndex(c => c.hash === selected.value)
+  const c = i < 0 ? list[0] : list[(i + (back ? -1 : 1) + list.length) % list.length]
+  selectCommit(c.hash)
+  document.getElementById('c-' + c.hash)?.scrollIntoView({ block: 'center' })
 }
 
 async function refresh() {
   if (!repo.value) return
   try {
-    const [log, st, refs, cur, stash] = await Promise.all([
+    const [log, st, refs, cur, stash, ops] = await Promise.all([
       // empty repo has no log; stashes are listed in the sidebar instead of the graph
       g('log', '--exclude=refs/stash', '--all', '--topo-order', '-n', String(MAX_COMMITS), LOG_FORMAT).catch(() => ''),
       g('status', '--porcelain=v1', '-z', '-uall'),
-      g('for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes'),
+      g('for-each-ref', '--format=%(refname)%1f%(upstream:track,nobracket)', 'refs/heads', 'refs/remotes'),
       g('branch', '--show-current'),
       g('stash', 'list', '--format=%gd%x1f%gs'),
+      Promise.all(Object.keys(OPS).map(r => g('rev-parse', '-q', '--verify', r))), // missing ref -> ''
     ])
     stashes.value = stash.split('\n').filter(Boolean).map(l => {
       const [ref, subject] = l.split('\x1f')
       return { ref, subject }
     })
-    const names = refs.split('\n').filter(r => r && !r.endsWith('/HEAD'))
+    operation.value = Object.values(OPS)[ops.findIndex(o => o.trim())] ?? ''
+    const rows = refs.split('\n').map(l => l.split('\x1f')).filter(([r]) => r && !r.endsWith('/HEAD'))
+    const track = {}
+    for (const [r, t] of rows) {
+      if (r.startsWith('refs/heads/') && t)
+        track[r.slice(11)] = { ahead: +(t.match(/ahead (\d+)/)?.[1] ?? 0), behind: +(t.match(/behind (\d+)/)?.[1] ?? 0) }
+    }
     branches.value = {
-      local: names.filter(r => r.startsWith('refs/heads/')).map(r => r.slice(11)),
-      remote: names.filter(r => r.startsWith('refs/remotes/')).map(r => r.slice(13)),
+      local: rows.filter(([r]) => r.startsWith('refs/heads/')).map(([r]) => r.slice(11)),
+      remote: rows.filter(([r]) => r.startsWith('refs/remotes/')).map(([r]) => r.slice(13)),
+      track,
     }
     const remotes = new Set(branches.value.remote)
     const list = parseLog(log)
@@ -144,6 +225,8 @@ async function openPath(dir) {
     repo.value = top
     localStorage.setItem('repo', top)
     saveRecent([top, ...recent.value.filter(r => r !== top)].slice(0, 8))
+    undos.value = []
+    query.value = ''
     selected.value = 'WIP'
     diff.value = null
     await refresh()
@@ -179,69 +262,83 @@ async function showDiff(file, kind) {
   let text
   if (kind === 'commit') text = await g('show', '--format=', '--diff-merges=first-parent', selected.value, '--', p)
   else if (kind === 'staged') text = await g('diff', '--cached', '--', p)
-  else if (file.code === 'U') text = await g('diff', '--no-index', '--', '/dev/null', p)
+  else if (file.code === 'U' || file.code === 'C') text = await g('diff', '--no-index', '--', '/dev/null', p) // conflict: whole file with markers
   else text = await g('diff', '--', p)
   diff.value = { file, kind, d: parseDiff(text) }
 }
 
 const setDiffMode = m => localStorage.setItem('diffMode', (diffMode.value = m))
 // Untracked files have no index entry to patch, so they are staged whole.
-const hunkable = computed(() => diff.value && diff.value.kind !== 'commit' && diff.value.file.code !== 'U')
-const applyHunk = async (label, h, ...flags) => {
+const hunkable = computed(() => diff.value && diff.value.kind !== 'commit' && !'UC'.includes(diff.value.file.code))
+const applyHunk = async (label, h, flags, undo) => {
   const { file, kind, d } = diff.value
-  await run(label, () => gIn(hunkPatch(d, h), 'apply', ...flags, '-'))
+  await run(label, () => gIn(hunkPatch(d, h), 'apply', ...flags, '-'), undo)
   await showDiff(file, kind)
 }
 const discardHunk = async h => {
-  if (await ask('Buang perubahan di hunk ini? Tidak bisa di-undo.', { kind: 'warning' })) applyHunk('Discard', h, '--reverse')
+  if (!(await ask('Buang perubahan di hunk ini?', { kind: 'warning' }))) return
+  const patch = hunkPatch(diff.value.d, h)
+  applyHunk('Discard hunk', h, ['--reverse'], () => gIn(patch, 'apply', '-'))
 }
 
 const stage = p => run('Stage', () => g('add', '--', p))
 const unstage = p => run('Unstage', () => g('restore', '--staged', '--', p))
 const stageAll = () => run('Stage', () => g('add', '-A'))
 const unstageAll = () => run('Unstage', () => g('restore', '--staged', '--', '.'))
+async function discardPaths(label, paths) {
+  let hash = ''
+  run(label, async () => (hash = await stashAway(paths)), () => hash && unstashAway(hash))
+}
 const discard = async f => {
-  if (!(await ask(`Buang perubahan di "${f.path}"? Tidak bisa di-undo.`, { kind: 'warning' }))) return
-  run('Discard', () => (f.code === 'U' ? g('clean', '-f', '--', f.path) : g('restore', '--', f.path)))
+  if (await ask(`Buang perubahan di "${f.path}"?`, { kind: 'warning' })) discardPaths('Discard', [f.path])
 }
 const discardAll = async () => {
-  if (!(await ask('Buang SEMUA perubahan unstaged, termasuk file baru? Tidak bisa di-undo.', { kind: 'warning' }))) return
-  run('Discard', async () => {
-    await g('restore', '--', '.').catch(() => {}) // fails when only untracked files changed
-    await g('clean', '-fd')
-  })
+  if (await ask('Buang semua perubahan unstaged, termasuk file baru?', { kind: 'warning' })) discardPaths('Discard all', ['.'])
 }
 
 watch(amend, async on => {
   if (on && !msg.value.trim()) msg.value = (await g('log', '-1', '--format=%B')).trim()
 })
-const commit = () =>
-  msg.value.trim() &&
-  run('Commit', async () => {
-    await g('commit', ...(amend.value ? ['--amend'] : []), '-m', msg.value)
-    msg.value = ''
-    amend.value = false
-  })
+async function commit() {
+  if (!msg.value.trim()) return
+  const before = await headHash()
+  run(
+    amend.value ? 'Amend' : 'Commit',
+    async () => {
+      await g('commit', ...(amend.value ? ['--amend'] : []), '-m', msg.value)
+      msg.value = ''
+      amend.value = false
+    },
+    resetBack(before, '--soft'), // changes go back to staged
+  )
+}
 
-const stash = () => run('Stash', () => g('stash', 'push', '-u'))
-const stashDo = async (action, s) => {
-  if (action === 'drop' && !(await ask(`Hapus ${s.ref}?`, { kind: 'warning' }))) return
-  run('Stash ' + action, () => g('stash', action, s.ref))
+const stash = () => run('Stash', () => g('stash', 'push', '-u'), () => g('stash', 'pop', '--index'))
+async function stashDo(action, s) {
+  if (action !== 'drop') return run('Stash ' + action, () => g('stash', action, s.ref))
+  if (!(await ask(`Hapus ${s.ref}?`, { kind: 'warning' }))) return
+  const hash = (await g('rev-parse', s.ref)).trim()
+  run('Drop stash', () => g('stash', 'drop', s.ref), () => g('stash', 'store', '-m', s.subject, hash))
 }
 
 function openMenu(e, c) {
   selectCommit(c.hash)
   menu.value = { x: Math.min(e.clientX, innerWidth - 240), y: Math.min(e.clientY, innerHeight - 360), hash: c.hash, input: null, value: '' }
 }
-const act = (label, ...args) => {
+// Runs a HEAD-changing action; `undoFor(prev)` builds its undo from the HEAD state before it ran.
+async function act(label, args, undoFor) {
   menu.value = null
-  run(label, () => g(...args))
+  const prev = await prevHead()
+  run(label, () => g(...args), undoFor?.(prev))
 }
+const newBranchAt = (name, at) => act('Branch', ['switch', '-c', name, ...at], p => async () => {
+  await goBack(p)
+  await g('branch', '-D', name)
+})
 async function resetTo(mode) {
   const { hash } = menu.value
-  menu.value = null
-  if (mode === 'hard' && !(await ask(`Reset --hard ke ${hash.slice(0, 7)}? Semua perubahan yang belum di-commit akan hilang.`, { kind: 'warning' }))) return
-  run('Reset', () => g('reset', '--' + mode, hash))
+  if (mode === 'hard' && !(await ask(`Reset --hard ke ${hash.slice(0, 7)}? Perubahan yang belum di-commit akan hilang dan tidak bisa di-undo.`, { kind: 'warning' }))) return
+  act('Reset', ['reset', '--' + mode, hash], p => resetBack(p.hash, mode === 'hard' ? '--keep' : '--soft'))
 }
 const copyHash = () => {
   navigator.clipboard.writeText(menu.value.hash)
@@ -251,28 +348,27 @@ function submitMenu() {
   const { hash, input, value } = menu.value
   const name = value.trim()
   if (!name) return
-  if (input === 'branch') act('Branch', 'switch', '-c', name, hash)
-  else act('Tag', 'tag', '-a', name, '-m', name, hash)
+  if (input === 'branch') newBranchAt(name, [hash])
+  else act('Tag', ['tag', '-a', name, '-m', name, hash], () => () => g('tag', '-d', name))
 }
 
-const createBranch = () => {
+function createBranch() {
   const name = newBranch.value.trim()
   if (!name) return
-  const at = selected.value === 'WIP' ? [] : [selected.value]
-  run('Branch', async () => {
-    await g('switch', '-c', name, ...at)
-    newBranch.value = ''
-  })
+  newBranchAt(name, selected.value === 'WIP' ? [] : [selected.value])
+  newBranch.value = ''
 }
 // `switch foo` for a remote origin/foo creates a local tracking branch.
-const checkout = (b, remote) => run('Checkout', () => g('switch', remote ? b.slice(b.indexOf('/') + 1) : b))
-const merge = b => run('Merge', () => g('merge', b))
-const removeBranch = async b => {
-  if (await ask(`Hapus branch "${b}"?`, { kind: 'warning' })) run('Delete', () => g('branch', '-d', b))
+const checkout = (b, remote) => act('Checkout', ['switch', remote ? b.slice(b.indexOf('/') + 1) : b], p => () => goBack(p))
+const merge = b => act('Merge', ['merge', b], p => resetBack(p.hash))
+async function removeBranch(b) {
+  if (!(await ask(`Hapus branch "${b}"?`, { kind: 'warning' }))) return
+  const hash = (await g('rev-parse', b)).trim()
+  run('Delete branch', () => g('branch', '-d', b), () => g('branch', b, hash))
 }
 
 const fetchAll = () => run('Fetch', () => g('fetch', '--all', '--prune'))
-const pull = () => run('Pull', () => g('pull'))
+const pull = () => act('Pull', ['pull'], p => resetBack(p.hash))
 const push = () =>
   run('Push', () =>
     g('push', '--follow-tags').catch(e => {
@@ -281,12 +377,23 @@ const push = () =>
       throw e
     }),
   )
+const headTrack = computed(() => branches.value.track?.[head.value] ?? { ahead: 0, behind: 0 })
 
 onMounted(() => {
   refresh()
   window.addEventListener('focus', refresh)
   window.addEventListener('click', () => (menu.value = null))
-  window.addEventListener('keydown', e => e.key === 'Escape' && (menu.value = null))
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Escape') menu.value = null
+    const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)
+    if (e.ctrlKey && e.key === 'f' && repo.value) {
+      e.preventDefault()
+      searchEl.value?.focus()
+    } else if (e.ctrlKey && e.key === 'z' && !typing && repo.value) {
+      e.preventDefault()
+      undo()
+    }
+  })
 })
 </script>
 
@@ -300,14 +407,27 @@ onMounted(() => {
       <template v-if="repo">
         <span class="sep" />
         <button :disabled="!!busy" @click="fetchAll">⟳ Fetch</button>
-        <button :disabled="!!busy" @click="pull">↓ Pull</button>
-        <button :disabled="!!busy" @click="push">↑ Push</button>
+        <button :disabled="!!busy" @click="pull">↓ Pull<b v-if="headTrack.behind" class="count">{{ headTrack.behind }}</b></button>
+        <button :disabled="!!busy" @click="push">↑ Push<b v-if="headTrack.ahead" class="count">{{ headTrack.ahead }}</b></button>
         <span class="sep" />
         <button :disabled="!!busy || !dirty" @click="stash">⊞ Stash</button>
         <button :disabled="!!busy || !stashes.length" @click="stashDo('pop', stashes[0])">⊟ Pop</button>
         <span class="sep" />
         <span class="head">⎇ {{ head || '(detached)' }}</span>
         <span v-if="busy" class="busy">{{ busy }}…</span>
+        <span class="spacer" />
+        <button :disabled="!undos.length || !!busy" :title="undos.length ? 'Undo: ' + undos.at(-1).label + ' (Ctrl+Z)' : 'Belum ada yang bisa di-undo'" @click="undo">
+          ↶ Undo<small v-if="undos.length"> {{ undos.at(-1).label.toLowerCase() }}</small>
+        </button>
+        <input
+          ref="searchEl"
+          v-model="query"
+          class="search"
+          placeholder="Cari commit, author, hash (Ctrl+F)"
+          @keydown.enter="nextMatch($event.shiftKey)"
+          @keydown.esc="query = ''"
+        />
+        <small v-if="matches" class="busy">{{ matches.size }} hasil</small>
       </template>
     </header>
 
@@ -318,6 +438,10 @@ onMounted(() => {
       <h4>Local</h4>
       <div v-for="b in branches.local" :key="b" class="branch" :class="{ current: b === head }" @dblclick="checkout(b)">
         <span class="name" :title="b">{{ b }}</span>
+        <span v-if="branches.track[b]?.ahead || branches.track[b]?.behind" class="track" title="ahead / behind upstream">
+          <template v-if="branches.track[b].ahead">↑{{ branches.track[b].ahead }}</template>
+          <template v-if="branches.track[b].behind"> ↓{{ branches.track[b].behind }}</template>
+        </span>
         <span class="actions" v-if="b !== head">
           <button title="Merge ke branch aktif" @click="merge(b)">⤵</button>
           <button title="Hapus" @click="removeBranch(b)">✕</button>
@@ -342,6 +466,17 @@ onMounted(() => {
       <p class="hint">Double-click branch untuk checkout · klik kanan commit untuk aksi lain</p>
     </aside>
 
+    <div v-if="operation" class="op-banner">
+      <b>{{ { merge: 'Merge', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[operation] }} sedang berlangsung.</b>
+      <span v-if="status.conflicts.length">
+        {{ status.conflicts.length }} file conflict. Perbaiki di editor, lalu klik "Tandai selesai" di panel kanan.
+      </span>
+      <span v-else>Semua conflict sudah selesai.</span>
+      <span class="spacer" />
+      <button @click="abortOp">Abort</button>
+      <button class="primary" :disabled="status.conflicts.length > 0 || !!busy" @click="continueOp">Continue</button>
+    </div>
+
     <main class="main" v-if="repo">
       <div v-if="diff" class="diff">
         <div class="diff-head">
@@ -361,9 +496,9 @@ onMounted(() => {
             <span v-if="hunkable" class="hunk-actions">
               <template v-if="diff.kind === 'unstaged'">
                 <button @click="discardHunk(h)">Discard hunk</button>
-                <button class="primary" @click="applyHunk('Stage hunk', h, '--cached')">Stage hunk</button>
+                <button class="primary" @click="applyHunk('Stage hunk', h, ['--cached'])">Stage hunk</button>
               </template>
-              <button v-else @click="applyHunk('Unstage hunk', h, '--cached', '--reverse')">Unstage hunk</button>
+              <button v-else @click="applyHunk('Unstage hunk', h, ['--cached', '--reverse'])">Unstage hunk</button>
             </span>
           </div>
           <table v-if="diffMode === 'split'" class="lines split">
@@ -410,9 +545,9 @@ onMounted(() => {
           <div class="row wip" :class="{ sel: selected === 'WIP' }" @click="selectCommit('WIP')">
             <span class="refs" :style="{ width: REFS + 'px' }" />
             <span :style="{ width: x(graphWidth) + 'px' }" class="gutter" />
-            <span class="subject">// WIP <small v-if="dirty">({{ status.staged.length + status.unstaged.length }} file berubah)</small></span>
+            <span class="subject">// WIP <small v-if="dirty">({{ status.staged.length + status.unstaged.length + status.conflicts.length }} file berubah)</small></span>
           </div>
-          <div v-for="c in commits" :key="c.hash" class="row" :class="{ sel: selected === c.hash }" :style="{ '--c': color(c.col) }" @click="selectCommit(c.hash)" @contextmenu.prevent="openMenu($event, c)">
+          <div v-for="c in commits" :key="c.hash" class="row" :id="'c-' + c.hash" :class="{ sel: selected === c.hash, dim: matches && !matches.has(c.hash) }" :style="{ '--c': color(c.col) }" @click="selectCommit(c.hash)" @contextmenu.prevent="openMenu($event, c)">
             <span class="refs" :style="{ width: REFS + 'px' }">
               <template v-if="c.pills.length">
                 <span class="pill" :class="{ head: c.pills[0].head }" :title="c.pills[0].name">
@@ -431,6 +566,14 @@ onMounted(() => {
     </main>
     <aside class="panel" v-if="repo">
       <template v-if="selected === 'WIP'">
+        <div v-if="status.conflicts.length" class="section conflicts">
+          <h4>Conflict ({{ status.conflicts.length }})</h4>
+          <div v-for="f in status.conflicts" :key="f.path" class="file" @click="showDiff(f, 'unstaged')">
+            <span class="code C">!</span>
+            <span class="name" :title="f.path">{{ f.path }}</span>
+            <button @click.stop="resolve(f.path)">Tandai selesai</button>
+          </div>
+        </div>
         <div class="section">
           <h4>
             Unstaged ({{ status.unstaged.length }})
@@ -484,12 +627,12 @@ onMounted(() => {
       </form>
       <template v-else>
         <div class="menu-title"><code>{{ menu.hash.slice(0, 7) }}</code></div>
-        <button @click="act('Checkout', 'switch', '--detach', menu.hash)">Checkout commit ini</button>
+        <button @click="act('Checkout', ['switch', '--detach', menu.hash], p => () => goBack(p))">Checkout commit ini</button>
         <button @click="menu.input = 'branch'">Buat branch di sini…</button>
         <button @click="menu.input = 'tag'">Buat tag di sini…</button>
         <hr />
-        <button @click="act('Cherry-pick', 'cherry-pick', menu.hash)">Cherry-pick ke {{ head || 'HEAD' }}</button>
-        <button @click="act('Revert', 'revert', '--no-edit', menu.hash)">Revert commit</button>
+        <button @click="act('Cherry-pick', ['cherry-pick', menu.hash], p => resetBack(p.hash))">Cherry-pick ke {{ head || 'HEAD' }}</button>
+        <button @click="act('Revert', ['revert', '--no-edit', menu.hash], p => resetBack(p.hash))">Revert commit</button>
         <hr />
         <button @click="resetTo('soft')">Reset {{ head || 'HEAD' }} ke sini · soft</button>
         <button @click="resetTo('mixed')">Reset {{ head || 'HEAD' }} ke sini · mixed</button>
@@ -553,9 +696,34 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 
 .app {
   display: grid;
-  grid-template: 44px minmax(0, 1fr) / 230px minmax(0, 1fr) 340px;
+  grid-template: 44px auto minmax(0, 1fr) / 230px minmax(0, 1fr) 340px;
   height: 100vh;
 }
+.sidebar, .main, .panel { grid-row: 3; }
+.op-banner {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #4a2a0c;
+  border-bottom: 1px solid var(--accent);
+  color: var(--bone);
+}
+.spacer { flex: 1; }
+.count {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #1a1206;
+  font-size: 11px;
+}
+.search { width: 240px; }
+.track { color: var(--accent); font-size: 11px; white-space: nowrap; }
+.row.dim { opacity: 0.3; }
+.conflicts { flex: none; }
+.code.C { color: #f2665b; }
 .toolbar {
   grid-column: 1 / -1;
   display: flex;
@@ -669,7 +837,6 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
   z-index: 2;
 }
 .diff-head small { color: var(--dim); }
-.spacer { flex: 1; }
 .seg { display: inline-flex; }
 .seg button { border-radius: 0; }
 .seg button:first-child { border-radius: 4px 0 0 4px; }
