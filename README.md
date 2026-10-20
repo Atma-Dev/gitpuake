@@ -17,6 +17,29 @@ Opsional: [GitHub CLI](https://cli.github.com) (`gh auth login`) untuk fitur Pul
 npm install
 npm run tauri dev      # development
 npm run tauri build    # bundle rilis
-for t in graph diff rebase blame merge; do node src/$t.test.js; done # self-check
-(cd src-tauri && cargo test --lib)                                # cek keamanan path file
+for t in src/*.test.js; do node "$t"; done # self-check
+(cd src-tauri && cargo test --lib)         # cek keamanan path file
 ```
+
+## Rilis & update
+
+Rilis dibangun otomatis oleh GitHub Actions (`.github/workflows/release.yml`) di Linux, macOS, dan Windows.
+
+1. Samakan versi di `package.json`, `src-tauri/tauri.conf.json`, dan `src-tauri/Cargo.toml`, commit.
+2. `git tag v0.2.0 && git push --tags`
+3. Setelah workflow selesai, buka tab **Releases** di GitHub: ada rilis **draft** berisi `.deb`, `.AppImage`, `.rpm`
+   (Linux), `.dmg` (macOS), `.msi` + `-setup.exe` (Windows). Cek, lalu klik **Publish**.
+
+Workflow juga bisa dijalankan manual (Actions → release → Run workflow). Build lokal: `npm run tauri build -- --bundles deb`
+→ `src-tauri/target/release/bundle/deb/`. Paket `.deb` otomatis bergantung pada `git`.
+
+**Auto-update belum aktif** karena butuh kunci tanda tangan yang hanya boleh dipegang pemilik repo. Untuk mengaktifkan:
+
+1. `npx tauri signer generate -w ~/.tauri/gitpuake.key` — simpan private key dan password-nya baik-baik (jangan di-commit).
+2. Di GitHub → Settings → Secrets → Actions, tambahkan `TAURI_SIGNING_PRIVATE_KEY` (isi file key) dan
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, lalu teruskan keduanya sebagai `env` di langkah `tauri-action` pada `release.yml`.
+3. `npm run tauri add updater` (menambah crate `tauri-plugin-updater`, paket `@tauri-apps/plugin-updater`, dan permission).
+4. Di `tauri.conf.json`: `"bundle": { "createUpdaterArtifacts": true }` dan
+   `"plugins": { "updater": { "pubkey": "<isi file .key.pub>", "endpoints": ["https://github.com/Atma-Dev/gitpuake/releases/latest/download/latest.json"] } }`.
+5. Di `release.yml` tambahkan `includeUpdaterJson: true` pada `tauri-action`, lalu panggil `check()` dari
+   `@tauri-apps/plugin-updater` di frontend (mis. saat start) dan `downloadAndInstall()` bila ada versi baru.
