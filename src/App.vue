@@ -33,6 +33,7 @@ const msg = ref('')
 const newBranch = ref('')
 const busy = ref('')
 const error = ref('')
+const info = ref('') // success message, e.g. the URL of a new PR
 const stashes = ref([])
 const remotes = ref([]) // [{ name, url }]
 const tags = ref([]) // [{ name, oid, commit }]
@@ -268,7 +269,9 @@ async function openPath(dir) {
     query.value = ''
     selected.value = 'WIP'
     diff.value = fileView.value = plan.value = mergeView.value = null
+    prs.value = null
     await refresh()
+    loadPRs()
   } catch (e) {
     error.value = `${dir} bukan git repository. Pilih folder yang berisi .git, atau buat repository baru.`
   }
@@ -524,6 +527,7 @@ async function autoFetch() {
     await g('fetch', '--all', '--prune', '--quiet')
     lastFetch.value = Date.now()
     await refresh()
+    loadPRs()
   } catch {}
 }
 
@@ -547,6 +551,43 @@ function scrollToCommit(hash) {
 // returning from a diff/plan/file view re-mounts the history; resync the window
 watch([diff, plan, fileView, mergeView], () => nextTick(() => mainEl.value && onScroll()))
 const pull = () => act('Pull', ['pull'], p => resetBack(p.hash))
+// GitHub pull requests through the user's `gh` CLI.
+const isGitHub = computed(() => remotes.value.some(r => /github\.com/.test(r.url)))
+const prs = ref(null) // null | { list } | { error: 'missing' | 'auth' | message }
+const prForm = ref(null) // { title, body, base, draft } while creating a PR
+const ghCall = (...args) => invoke('gh', { repo: repo.value, args })
+async function loadPRs() {
+  if (!isGitHub.value) return (prs.value = null)
+  try {
+    const out = await ghCall('pr', 'list', '--state', 'open', '--limit', '50', '--json', 'number,title,author,headRefName,baseRefName,isDraft,reviewDecision,url')
+    prs.value = { list: JSON.parse(out) }
+  } catch (e) {
+    const msg = String(e)
+    prs.value = { error: /^gh: .*(No such file|os error 2)/.test(msg) ? 'missing' : /auth login|not logged/i.test(msg) ? 'auth' : msg }
+  }
+}
+async function checkoutPR(pr) {
+  const prev = await prevHead()
+  run('Checkout PR #' + pr.number, () => ghCall('pr', 'checkout', String(pr.number)), () => goBack(prev))
+}
+const openPRWeb = pr => ghCall('pr', 'view', String(pr.number), '--web').catch(e => (error.value = String(e)))
+async function openPRForm() {
+  const base = (await g('symbolic-ref', '-q', '--short', `refs/remotes/${firstRemote()}/HEAD`)).trim().split('/').slice(1).join('/')
+  const title = (await g('log', '-1', '--format=%s')).trim()
+  prForm.value = { title, body: '', base: base || 'main', draft: false }
+}
+function createPR() {
+  const { title, body, base, draft } = prForm.value
+  prForm.value = null
+  run('Buat PR', async () => {
+    await g('push', '-u', firstRemote(), 'HEAD') // gh needs the branch on GitHub first
+    const url = await ghCall('pr', 'create', '--title', title, '--body', body, '--base', base, '--head', head.value, ...(draft ? ['--draft'] : []))
+    info.value = 'Pull request dibuat: ' + url.trim()
+    await loadPRs()
+  })
+}
+const REVIEW = { APPROVED: '✓ disetujui', CHANGES_REQUESTED: '✗ perlu perubahan', REVIEW_REQUIRED: 'menunggu review' }
+
 const firstRemote = () => remotes.value.find(r => r.name === 'origin')?.name ?? remotes.value[0]?.name ?? 'origin'
 const push = () =>
   run('Push', async () => {
@@ -628,6 +669,7 @@ onMounted(() => {
         <button :disabled="!!busy || !stashes.length" @click="stashDo('pop', stashes[0])">⊟ Pop</button>
         <span class="sep" />
         <span class="head">⎇ {{ head || '(detached)' }}</span>
+        <button v-if="isGitHub && head" :disabled="!!busy" title="Push branch ini lalu buat pull request di GitHub" @click="openPRForm">⇪ Buat PR</button>
         <span v-if="busy" class="busy">{{ busy }}…</span>
         <span class="spacer" />
         <button :disabled="!undos.length || !!busy" :title="undos.length ? 'Undo: ' + undos.at(-1).label + ' (Ctrl+Z)' : 'Belum ada yang bisa di-undo'" @click="undo">
@@ -709,6 +751,30 @@ onMounted(() => {
             <button title="Apply" @click="stashDo('apply', s)">↧</button>
             <button title="Pop" @click="stashDo('pop', s)">⊟</button>
             <button title="Hapus" @click="stashDo('drop', s)">✕</button>
+          </span>
+        </div>
+      </template>
+      <template v-if="isGitHub">
+        <h4>Pull Request <button title="Muat ulang" @click="loadPRs">⟳</button></h4>
+        <p v-if="!prs" class="hint">Memuat…</p>
+        <p v-else-if="prs.error === 'missing'" class="hint">
+          Pasang GitHub CLI (<code>gh</code>), lalu jalankan <code>gh auth login</code> untuk melihat dan membuat pull request.
+        </p>
+        <p v-else-if="prs.error === 'auth'" class="hint">Jalankan <code>gh auth login</code> di terminal, lalu klik ⟳.</p>
+        <p v-else-if="prs.error" class="hint" :title="prs.error">Gagal memuat pull request: {{ prs.error.split('\n')[0] }}</p>
+        <p v-else-if="!prs.list.length" class="hint">Tidak ada pull request terbuka.</p>
+        <div v-for="pr in prs?.list ?? []" :key="pr.number" class="branch pr" :title="pr.title" @dblclick="checkoutPR(pr)">
+          <span class="name">
+            <span class="pr-title"><b>#{{ pr.number }}</b> {{ pr.title }}</span>
+            <small>
+              {{ pr.headRefName }} → {{ pr.baseRefName }} · {{ pr.author?.login }}
+              <template v-if="pr.isDraft"> · draft</template>
+              <template v-else-if="REVIEW[pr.reviewDecision]"> · {{ REVIEW[pr.reviewDecision] }}</template>
+            </small>
+          </span>
+          <span class="actions">
+            <button title="Checkout branch PR ini" @click="checkoutPR(pr)">⎇</button>
+            <button title="Buka di browser" @click="openPRWeb(pr)">↗</button>
           </span>
         </div>
       </template>
@@ -1010,6 +1076,26 @@ onMounted(() => {
     </div>
   </div>
 
+  <div v-if="prForm" class="dialog-backdrop" @click.self="prForm = null" @keydown.esc="prForm = null">
+    <form class="dialog" @submit.prevent="createPR">
+      <h3>Buat pull request</h3>
+      <p class="dialog-sub">Branch <b>{{ head }}</b> akan di-push dulu, lalu PR dibuat ke branch tujuan.</p>
+      <label>Branch tujuan <input v-model="prForm.base" /></label>
+      <p v-if="prForm.base.trim() === head" class="plan-error">Branch tujuan sama dengan branch ini. Buat branch baru untuk perubahanmu dulu.</p>
+      <label>Judul <input v-model="prForm.title" v-focus /></label>
+      <label>Deskripsi <textarea v-model="prForm.body" rows="6" placeholder="Apa yang berubah dan kenapa" /></label>
+      <label class="amend"><input v-model="prForm.draft" type="checkbox" /> Buat sebagai draft</label>
+      <span class="form-actions">
+        <button type="button" @click="prForm = null">Batal</button>
+        <button class="primary" :disabled="!prForm.title.trim() || !prForm.base.trim() || prForm.base.trim() === head">Push & buat PR</button>
+      </span>
+    </form>
+  </div>
+
+  <div v-if="info" class="error info" @click="info = ''">
+    <pre>{{ info }}</pre>
+    <small>klik untuk tutup</small>
+  </div>
   <div v-if="error" class="error" @click="error = ''">
     <pre>{{ error }}</pre>
     <small>klik untuk tutup</small>
@@ -1200,6 +1286,28 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .conflict-foot button { padding: 1px 8px; font-size: 11px; }
 .base { color: var(--dim); font-size: 12px; }
 .base pre { margin: 4px 0 0; font: 12px/1.5 ui-monospace, monospace; white-space: pre-wrap; }
+
+.pr .name { display: flex; flex-direction: column; min-width: 0; }
+.pr-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr small { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hint code { color: var(--fg); }
+.dialog-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; background: #000a; }
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(520px, 100% - 32px);
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg2);
+  box-shadow: 0 12px 40px #000c;
+}
+.dialog h3 { margin: 0; color: var(--bone); }
+.dialog-sub { margin: -6px 0 0; color: var(--dim); }
+.dialog label { display: flex; flex-direction: column; gap: 4px; color: var(--dim); }
+.dialog label.amend { flex-direction: row; }
+.error.info { background: #1f3a1c; border-color: #8ee05b; }
 
 .remote-form { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 6px; }
