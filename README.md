@@ -2,9 +2,10 @@
 
 Git client desktop ala GitKraken — Tauri 2 + Vue 3. Backend cuma menjalankan `git` CLI.
 
-Fitur: commit graph, stage/unstage per file, per hunk, atau per baris, riwayat file & blame, diff split/unified, discard, commit + amend, stash,
+Fitur: commit graph, stage/unstage per file, per hunk, atau per baris, riwayat file & blame, diff split/unified dengan syntax highlight, discard, commit + amend, stash,
 branch (buat/checkout/merge/rebase/hapus), interactive rebase, undo (Ctrl+Z), banner conflict, cari commit (Ctrl+F),
-ahead/behind, menu klik kanan commit (checkout, branch, tag, cherry-pick, revert, reset), fetch/pull/push.
+ahead/behind, menu klik kanan commit (checkout, branch, tag, cherry-pick, revert, reset), kelola remote & tag,
+fetch/pull/push (force push dengan --force-with-lease saat ditolak).
 
 ## Jalankan
 

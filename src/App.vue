@@ -6,6 +6,7 @@ import { LOG_FORMAT, parseLog, layout } from './graph.js'
 import { parseDiff, hunkPatch, linesPatch } from './diff.js'
 import { parseBlame } from './blame.js'
 import DiffView from './DiffView.vue'
+import { highlightRows } from './highlight.js'
 import { ACTIONS, buildTodo, validate } from './rebase.js'
 import Welcome from './Welcome.vue'
 import logo from './assets/puake.svg'
@@ -30,6 +31,9 @@ const newBranch = ref('')
 const busy = ref('')
 const error = ref('')
 const stashes = ref([])
+const remotes = ref([]) // [{ name, url }]
+const tags = ref([]) // [{ name, oid, commit }]
+const remoteForm = ref(null) // { name, url } while adding a remote
 const amend = ref(false)
 const menu = ref(null) // commit context menu: { x, y, hash, input, value }
 const diffMode = ref(localStorage.getItem('diffMode') || 'split')
@@ -180,7 +184,7 @@ function nextMatch(back) {
 async function refresh() {
   if (!repo.value) return
   try {
-    const [log, st, refs, cur, stash, ops] = await Promise.all([
+    const [log, st, refs, cur, stash, ops, remoteUrls, tagRefs] = await Promise.all([
       // empty repo has no log; stashes are listed in the sidebar instead of the graph
       g('log', '--exclude=refs/stash', '--all', '--topo-order', '-n', String(MAX_COMMITS), LOG_FORMAT).catch(() => ''),
       g('status', '--porcelain=v1', '-z', '-uall'),
@@ -188,7 +192,17 @@ async function refresh() {
       g('branch', '--show-current'),
       g('stash', 'list', '--format=%gd%x1f%gs'),
       Promise.all(Object.keys(OPS).map(r => g('rev-parse', '-q', '--verify', r))), // missing ref -> ''
+      g('config', '--get-regexp', '^remote\\..*\\.url$'), // no remotes -> ''
+      g('for-each-ref', '--sort=-creatordate', '--format=%(refname:short)%1f%(objectname)%1f%(*objectname)', 'refs/tags'),
     ])
+    remotes.value = remoteUrls.split('\n').filter(Boolean).map(l => {
+      const sp = l.indexOf(' ')
+      return { name: l.slice(7, sp - 4), url: l.slice(sp + 1) } // "remote.<name>.url <url>"
+    })
+    tags.value = tagRefs.split('\n').filter(Boolean).map(l => {
+      const [name, oid, peeled] = l.split('\x1f')
+      return { name, oid, commit: peeled || oid } // annotated tags point at a tag object
+    })
     stashes.value = stash.split('\n').filter(Boolean).map(l => {
       const [ref, subject] = l.split('\x1f')
       return { ref, subject }
@@ -205,9 +219,9 @@ async function refresh() {
       remote: rows.filter(([r]) => r.startsWith('refs/remotes/')).map(([r]) => r.slice(13)),
       track,
     }
-    const remotes = new Set(branches.value.remote)
+    const remoteBranches = new Set(branches.value.remote)
     const list = parseLog(log)
-    for (const c of list) c.pills = pills(c.refs, remotes)
+    for (const c of list) c.pills = pills(c.refs, remoteBranches)
     graphWidth.value = layout(list)
     commits.value = list
     status.value = parseStatus(st)
@@ -270,7 +284,10 @@ async function showDiff(file, kind) {
   else text = await g('diff', '--', p)
   const d = parseDiff(text)
   fileView.value = null
-  for (const h of d.hunks) h.picked = new Set() // raw line indexes picked for line-level staging
+  for (const h of d.hunks) {
+    h.picked = new Set() // raw line indexes picked for line-level staging
+    highlightRows(h.rows, p)
+  }
   diff.value = { file, kind, d }
 }
 
@@ -302,11 +319,14 @@ async function openHistory(path) {
 }
 async function pickHistory(it) {
   fileView.value.sel = it.hash
-  fileView.value.d = parseDiff(await g('show', '--format=', '--diff-merges=first-parent', it.hash, '--', it.path))
+  const d = parseDiff(await g('show', '--format=', '--diff-merges=first-parent', it.hash, '--', it.path))
+  for (const h of d.hunks) highlightRows(h.rows, it.path)
+  fileView.value.d = d
 }
 async function openBlame(path, rev) {
   try {
     const lines = parseBlame(await g('blame', '--porcelain', ...(rev ? [rev] : []), '--', path))
+    highlightRows(lines, path)
     fileView.value = { type: 'blame', path, rev, lines }
   } catch (e) {
     error.value = String(e)
@@ -438,14 +458,43 @@ async function removeBranch(b) {
 
 const fetchAll = () => run('Fetch', () => g('fetch', '--all', '--prune'))
 const pull = () => act('Pull', ['pull'], p => resetBack(p.hash))
+const firstRemote = () => remotes.value.find(r => r.name === 'origin')?.name ?? remotes.value[0]?.name ?? 'origin'
 const push = () =>
-  run('Push', () =>
-    g('push', '--follow-tags').catch(e => {
-      // ponytail: assumes remote "origin" for first push of a new branch
-      if (String(e).includes('no upstream')) return g('push', '--follow-tags', '-u', 'origin', 'HEAD')
+  run('Push', async () => {
+    try {
+      await g('push', '--follow-tags')
+    } catch (e) {
+      const msg = String(e)
+      if (msg.includes('no upstream')) return g('push', '--follow-tags', '-u', firstRemote(), 'HEAD')
+      const rejected = /rejected|non-fast-forward|fetch first/.test(msg)
+      if (
+        rejected &&
+        (await ask(
+          'Push ditolak karena history di remote berbeda, misalnya setelah rebase atau amend.\n\nForce push dengan --force-with-lease? Push tetap dibatalkan kalau ada commit baru di remote sejak fetch terakhir.',
+          { kind: 'warning', okLabel: 'Force push', cancelLabel: 'Batal' },
+        ))
+      )
+        return g('push', '--follow-tags', '--force-with-lease')
       throw e
-    }),
-  )
+    }
+  })
+
+function addRemote() {
+  const name = remoteForm.value.name.trim(), url = remoteForm.value.url.trim()
+  if (!name || !url) return
+  remoteForm.value = null
+  run('Tambah remote', () => g('remote', 'add', '--', name, url), () => g('remote', 'remove', name))
+}
+async function removeRemote(r) {
+  if (!(await ask(`Hapus remote "${r.name}"? Branch remote-nya ikut hilang dari daftar.`, { kind: 'warning' }))) return
+  run('Hapus remote', () => g('remote', 'remove', r.name), () => g('remote', 'add', '--', r.name, r.url))
+}
+const fetchRemote = r => run('Fetch ' + r.name, () => g('fetch', '--prune', '--', r.name))
+const pushTag = t => run('Push tag', () => g('push', firstRemote(), 'refs/tags/' + t.name))
+async function deleteTag(t) {
+  if (!(await ask(`Hapus tag "${t.name}" di lokal?`, { kind: 'warning' }))) return
+  run('Hapus tag', () => g('tag', '-d', t.name), () => g('update-ref', 'refs/tags/' + t.name, t.oid))
+}
 const headTrack = computed(() => branches.value.track?.[head.value] ?? { ahead: 0, behind: 0 })
 
 onMounted(() => {
@@ -517,14 +566,45 @@ onMounted(() => {
           <button title="Hapus" @click="removeBranch(b)">✕</button>
         </span>
       </div>
-      <h4>Remote</h4>
-      <div v-for="b in branches.remote" :key="b" class="branch" @dblclick="checkout(b, true)">
-        <span class="name" :title="b">{{ b }}</span>
-        <span class="actions">
-          <button title="Merge ke branch aktif" @click="merge(b)">⤵</button>
-          <button title="Rebase branch aktif ke branch ini" @click="rebaseOnto(b)">⤴</button>
+      <h4>
+        Remote
+        <button v-if="!remoteForm" title="Tambah remote" @click="remoteForm = { name: remotes.length ? '' : 'origin', url: '' }">+ Tambah</button>
+      </h4>
+      <form v-if="remoteForm" class="remote-form" @submit.prevent="addRemote" @keydown.esc="remoteForm = null">
+        <input v-model="remoteForm.name" v-focus placeholder="Nama, misalnya origin" />
+        <input v-model="remoteForm.url" placeholder="git@github.com:user/repo.git" />
+        <span class="form-actions">
+          <button type="button" @click="remoteForm = null">Batal</button>
+          <button class="primary" :disabled="!remoteForm.name.trim() || !remoteForm.url.trim()">Tambah remote</button>
         </span>
-      </div>
+      </form>
+      <p v-if="!remotes.length && !remoteForm" class="hint">Belum ada remote. Tambahkan supaya bisa push dan pull.</p>
+      <template v-for="r in remotes" :key="r.name">
+        <div class="branch remote-head" :title="r.url">
+          <span class="name">☁ {{ r.name }}</span>
+          <span class="actions">
+            <button title="Fetch remote ini" @click="fetchRemote(r)">⟳</button>
+            <button title="Hapus remote" @click="removeRemote(r)">✕</button>
+          </span>
+        </div>
+        <div v-for="b in branches.remote.filter(b => b.startsWith(r.name + '/'))" :key="b" class="branch nested" @dblclick="checkout(b, true)">
+          <span class="name" :title="b">{{ b.slice(r.name.length + 1) }}</span>
+          <span class="actions">
+            <button title="Merge ke branch aktif" @click="merge(b)">⤵</button>
+            <button title="Rebase branch aktif ke branch ini" @click="rebaseOnto(b)">⤴</button>
+          </span>
+        </div>
+      </template>
+      <template v-if="tags.length">
+        <h4>Tag</h4>
+        <div v-for="t in tags" :key="t.name" class="branch" @click="jumpTo(t.commit)">
+          <span class="name" :title="t.name">◆ {{ t.name }}</span>
+          <span class="actions">
+            <button :title="'Push tag ke ' + firstRemote()" @click.stop="pushTag(t)">↑</button>
+            <button title="Hapus tag" @click.stop="deleteTag(t)">✕</button>
+          </span>
+        </div>
+      </template>
       <template v-if="stashes.length">
         <h4>Stash</h4>
         <div v-for="s in stashes" :key="s.ref" class="branch">
@@ -625,7 +705,7 @@ onMounted(() => {
               </button>
             </td>
             <td class="ln">{{ l.n }}</td>
-            <td class="src">{{ l.text }}</td>
+            <td class="src"><span v-if="l.html" v-html="l.html" /><template v-else>{{ l.text }}</template></td>
           </tr>
         </table>
       </div>
@@ -905,6 +985,25 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .lines .pickable:hover { filter: brightness(1.3); }
 .lines .picked { box-shadow: inset 3px 0 var(--accent); filter: brightness(1.45); }
 .hint-pick { color: var(--dim); font-style: italic; }
+
+.remote-form { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.form-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.remote-head .name { color: var(--fg); font-weight: 600; }
+.branch.nested { padding-left: 20px; }
+
+/* syntax colors for highlight.js, tuned to the swamp palette */
+.hljs-keyword, .hljs-selector-tag, .hljs-doctag { color: #eba93a; }
+.hljs-string, .hljs-template-tag, .hljs-template-variable, .hljs-addition { color: #b9cf7e; }
+.hljs-comment, .hljs-quote { color: #6f7d6c; font-style: italic; }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: #e8875f; }
+.hljs-title, .hljs-section, .hljs-function .hljs-title { color: #86c5d4; }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable.language_ { color: #d9c48c; }
+.hljs-tag, .hljs-name, .hljs-selector-class, .hljs-selector-id { color: #d0906a; }
+.hljs-type, .hljs-built_in, .hljs-class .hljs-title { color: #9fd3a9; }
+.hljs-meta, .hljs-meta .hljs-keyword { color: #8a9a85; }
+.hljs-regexp, .hljs-link { color: #d48aa6; }
+.hljs-section, .hljs-strong { font-weight: 600; }
+.hljs-emphasis { font-style: italic; }
 .diff-head .path { color: var(--bone); }
 
 .fileview { display: flex; flex-direction: column; height: 100%; }

@@ -22,16 +22,16 @@ const cls = (h, row, on) => [row?.type ?? 'none', { pickable: on && row && row.t
     <table v-if="mode === 'split'" class="lines split">
       <tr v-for="([l, r], k) in split(h.rows)" :key="k">
         <td class="ln">{{ l?.o }}</td>
-        <td class="src" :class="cls(h, l, selectable)" @click="toggle(h, l, selectable)">{{ l?.text }}</td>
+        <td class="src" :class="cls(h, l, selectable)" @click="toggle(h, l, selectable)"><span v-if="l?.html" v-html="l.html" /><template v-else>{{ l?.text }}</template></td>
         <td class="ln">{{ r?.n }}</td>
-        <td class="src" :class="cls(h, r, selectable)" @click="toggle(h, r, selectable)">{{ r?.text }}</td>
+        <td class="src" :class="cls(h, r, selectable)" @click="toggle(h, r, selectable)"><span v-if="r?.html" v-html="r.html" /><template v-else>{{ r?.text }}</template></td>
       </tr>
     </table>
     <table v-else class="lines">
       <tr v-for="(row, k) in h.rows" :key="k">
         <td class="ln">{{ row.o }}</td>
         <td class="ln">{{ row.n }}</td>
-        <td class="src" :class="cls(h, row, selectable)" @click="toggle(h, row, selectable)">{{ SIGN[row.type] }}{{ row.text }}</td>
+        <td class="src" :class="cls(h, row, selectable)" @click="toggle(h, row, selectable)">{{ SIGN[row.type] }}<span v-if="row.html" v-html="row.html" /><template v-else>{{ row.text }}</template></td>
       </tr>
     </table>
   </section>
