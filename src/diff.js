@@ -18,16 +18,37 @@ export function parseDiff(text) {
       header.push(l)
       continue
     }
-    h.raw.push(l)
-    if (l[0] === '+') h.rows.push({ type: 'add', n: n++, text: l.slice(1) })
-    else if (l[0] === '-') h.rows.push({ type: 'del', o: o++, text: l.slice(1) })
-    else if (l[0] !== '\\') h.rows.push({ type: 'ctx', o: o++, n: n++, text: l.slice(1) })
+    const ri = h.raw.push(l) - 1 // index into raw, used to pick single lines
+    if (l[0] === '+') h.rows.push({ type: 'add', n: n++, text: l.slice(1), ri })
+    else if (l[0] === '-') h.rows.push({ type: 'del', o: o++, text: l.slice(1), ri })
+    else if (l[0] !== '\\') h.rows.push({ type: 'ctx', o: o++, n: n++, text: l.slice(1), ri })
   }
   return { header, hunks }
 }
 
 // A patch containing only hunk `h`, for `git apply`.
 export const hunkPatch = (d, h) => [...d.header, h.header, ...h.raw, ''].join('\n')
+
+// A patch with only the `picked` raw lines of hunk `h` changed. Unpicked changes must
+// not apply: going forward an unpicked '+' is dropped and '-' becomes context;
+// with `reverse` (unstage/discard, applied with --reverse) the roles swap.
+// ponytail: picking lines after an unpicked "\ No newline" change joins them onto that last line
+export function linesPatch(d, h, picked, reverse) {
+  const [drop, keep] = reverse ? ['-', '+'] : ['+', '-']
+  const out = []
+  let last = true // whether the previous raw line survived, for "\ No newline"
+  h.raw.forEach((l, i) => {
+    const t = l[0]
+    if (t === '\\') return last && out.push(l)
+    last = t === ' ' || picked.has(i) || t === keep
+    if (t === ' ' || picked.has(i)) out.push(l)
+    else if (t === keep) out.push(' ' + l.slice(1))
+    else if (t !== drop) out.push(l)
+  })
+  const count = c => out.filter(l => l[0] === ' ' || l[0] === c).length
+  const [, a, c] = h.header.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+  return [...d.header, `@@ -${a},${count('-')} +${c},${count('+')} @@`, ...out, ''].join('\n')
+}
 
 // Pairs each run of deletions with the additions after it, for side-by-side view.
 export function split(rows) {

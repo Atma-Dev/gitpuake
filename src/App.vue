@@ -3,7 +3,9 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open, ask } from '@tauri-apps/plugin-dialog'
 import { LOG_FORMAT, parseLog, layout } from './graph.js'
-import { parseDiff, hunkPatch, split } from './diff.js'
+import { parseDiff, hunkPatch, linesPatch } from './diff.js'
+import { parseBlame } from './blame.js'
+import DiffView from './DiffView.vue'
 import { ACTIONS, buildTodo, validate } from './rebase.js'
 import Welcome from './Welcome.vue'
 import logo from './assets/puake.svg'
@@ -229,7 +231,7 @@ async function openPath(dir) {
     undos.value = []
     query.value = ''
     selected.value = 'WIP'
-    diff.value = null
+    diff.value = fileView.value = plan.value = null
     await refresh()
   } catch (e) {
     error.value = `${dir} bukan git repository. Pilih folder yang berisi .git, atau buat repository baru.`
@@ -243,12 +245,13 @@ function goHome() {
   repo.value = ''
   localStorage.removeItem('repo')
   commits.value = []
-  diff.value = null
+  diff.value = fileView.value = plan.value = null
 }
 
 async function selectCommit(hash) {
   selected.value = hash
   diff.value = null
+  fileView.value = null
   commitFiles.value = []
   if (hash === 'WIP') return
   const out = await g('show', '--format=', '--name-status', '--diff-merges=first-parent', hash)
@@ -265,21 +268,56 @@ async function showDiff(file, kind) {
   else if (kind === 'staged') text = await g('diff', '--cached', '--', p)
   else if (file.code === 'U' || file.code === 'C') text = await g('diff', '--no-index', '--', '/dev/null', p) // conflict: whole file with markers
   else text = await g('diff', '--', p)
-  diff.value = { file, kind, d: parseDiff(text) }
+  const d = parseDiff(text)
+  fileView.value = null
+  for (const h of d.hunks) h.picked = new Set() // raw line indexes picked for line-level staging
+  diff.value = { file, kind, d }
 }
 
 const setDiffMode = m => localStorage.setItem('diffMode', (diffMode.value = m))
 // Untracked files have no index entry to patch, so they are staged whole.
 const hunkable = computed(() => diff.value && diff.value.kind !== 'commit' && !'UC'.includes(diff.value.file.code))
-const applyHunk = async (label, h, flags, undo) => {
+// Applies hunk `h` of the open diff, or only its picked lines when some are picked.
+async function applyHunk(label, h, flags, undoFor) {
   const { file, kind, d } = diff.value
-  await run(label, () => gIn(hunkPatch(d, h), 'apply', ...flags, '-'), undo)
+  const patch = h.picked.size ? linesPatch(d, h, h.picked, flags.includes('--reverse')) : hunkPatch(d, h)
+  await run(h.picked.size ? label + ' baris' : label + ' hunk', () => gIn(patch, 'apply', ...flags, '-'), undoFor?.(patch))
   await showDiff(file, kind)
 }
 const discardHunk = async h => {
-  if (!(await ask('Buang perubahan di hunk ini?', { kind: 'warning' }))) return
-  const patch = hunkPatch(diff.value.d, h)
-  applyHunk('Discard hunk', h, ['--reverse'], () => gIn(patch, 'apply', '-'))
+  if (!(await ask(h.picked.size ? `Buang ${h.picked.size} baris terpilih?` : 'Buang perubahan di hunk ini?', { kind: 'warning' }))) return
+  applyHunk('Discard', h, ['--reverse'], patch => () => gIn(patch, 'apply', '-'))
+}
+
+const fileView = ref(null) // { type: 'history', path, items, sel, d } | { type: 'blame', path, rev, lines }
+async function openHistory(path) {
+  const out = await g('log', '--follow', '-n', '300', '--format=%x1e%H%x1f%an%x1f%at%x1f%s', '--name-only', '--', path)
+  const items = out.split('\x1e').filter(c => c.trim()).map(chunk => {
+    const [meta, ...files] = chunk.split('\n')
+    const [hash, author, time, subject] = meta.split('\x1f')
+    return { hash, author, time: +time, subject, path: files.find(Boolean) ?? path } // path at that commit (renames)
+  })
+  fileView.value = { type: 'history', path, items, sel: null, d: null }
+  if (items.length) pickHistory(items[0])
+}
+async function pickHistory(it) {
+  fileView.value.sel = it.hash
+  fileView.value.d = parseDiff(await g('show', '--format=', '--diff-merges=first-parent', it.hash, '--', it.path))
+}
+async function openBlame(path, rev) {
+  try {
+    const lines = parseBlame(await g('blame', '--porcelain', ...(rev ? [rev] : []), '--', path))
+    fileView.value = { type: 'blame', path, rev, lines }
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+function jumpTo(hash) {
+  if (/^0+$/.test(hash)) return
+  fileView.value = null
+  diff.value = null
+  selectCommit(hash)
+  setTimeout(() => document.getElementById('c-' + hash)?.scrollIntoView({ block: 'center' }))
 }
 
 const stage = p => run('Stage', () => g('add', '--', p))
@@ -551,45 +589,71 @@ onMounted(() => {
           tapi pesannya dibuang. <b>reword</b> hanya mengganti judul commit. Hasil rebase bisa di-undo.
         </p>
       </div>
+      <div v-else-if="fileView" class="fileview">
+        <div class="diff-head">
+          <b>{{ fileView.type === 'history' ? 'Riwayat' : 'Blame' }}</b>
+          <span class="path">{{ fileView.path }}</span>
+          <small v-if="fileView.type === 'blame'">{{ fileView.rev ? 'di ' + fileView.rev.slice(0, 7) : 'versi working tree' }}</small>
+          <span class="spacer" />
+          <span v-if="fileView.type === 'history'" class="seg">
+            <button :class="{ on: diffMode === 'split' }" @click="setDiffMode('split')">Split</button>
+            <button :class="{ on: diffMode === 'unified' }" @click="setDiffMode('unified')">Unified</button>
+          </span>
+          <button @click="fileView = null">✕ Tutup</button>
+        </div>
+        <template v-if="fileView.type === 'history'">
+          <ol class="file-log">
+            <li v-for="it in fileView.items" :key="it.hash" :class="{ sel: fileView.sel === it.hash }">
+              <button @click="pickHistory(it)">
+                <code>{{ it.hash.slice(0, 7) }}</code>
+                <span class="subj">{{ it.subject }}</span>
+                <span class="who">{{ it.author }}</span>
+                <span class="when">{{ ago(it.time) }}</span>
+              </button>
+            </li>
+          </ol>
+          <div class="file-log-diff">
+            <DiffView v-if="fileView.d" :d="fileView.d" :mode="diffMode" />
+          </div>
+        </template>
+        <table v-else class="lines blame">
+          <tr v-for="(l, i) in fileView.lines" :key="i" :class="{ first: i === 0 || fileView.lines[i - 1].hash !== l.hash }">
+            <td class="who" :style="{ '--c': avatarColor(l.hash) }">
+              <button v-if="i === 0 || fileView.lines[i - 1].hash !== l.hash" :title="l.summary" @click="jumpTo(l.hash)">
+                <template v-if="/^0+$/.test(l.hash)">Belum di-commit</template>
+                <template v-else><code>{{ l.hash.slice(0, 7) }}</code> {{ l.author }} · {{ ago(l.time) }}</template>
+              </button>
+            </td>
+            <td class="ln">{{ l.n }}</td>
+            <td class="src">{{ l.text }}</td>
+          </tr>
+        </table>
+      </div>
       <div v-else-if="diff" class="diff">
         <div class="diff-head">
           <b>{{ diff.file.path }}</b>
           <small>{{ { commit: 'commit ' + selected.slice(0, 7), staged: 'staged', unstaged: 'unstaged' }[diff.kind] }}</small>
+          <small v-if="hunkable" class="hint-pick">klik baris +/− untuk memilih baris tertentu</small>
           <span class="spacer" />
+          <button v-if="diff.file.code !== 'U'" @click="openHistory(diff.file.path)">Riwayat</button>
+          <button v-if="diff.file.code !== 'D'" @click="openBlame(diff.file.path, diff.kind === 'commit' ? selected : '')">Blame</button>
           <span class="seg">
             <button :class="{ on: diffMode === 'split' }" @click="setDiffMode('split')">Split</button>
             <button :class="{ on: diffMode === 'unified' }" @click="setDiffMode('unified')">Unified</button>
           </span>
           <button @click="diff = null">✕ Tutup</button>
         </div>
-        <p v-if="!diff.d.hunks.length" class="no-diff">{{ diff.d.header.filter(l => l.startsWith('Binary')).join('\n') || 'Tidak ada perubahan' }}</p>
-        <section v-for="(h, i) in diff.d.hunks" :key="i" class="hunk">
-          <div class="hunk-head">
-            <code>{{ h.header }}</code>
-            <span v-if="hunkable" class="hunk-actions">
+        <DiffView :d="diff.d" :mode="diffMode" :selectable="hunkable">
+          <template #actions="{ h }">
+            <template v-if="hunkable">
               <template v-if="diff.kind === 'unstaged'">
-                <button @click="discardHunk(h)">Discard hunk</button>
-                <button class="primary" @click="applyHunk('Stage hunk', h, ['--cached'])">Stage hunk</button>
+                <button @click="discardHunk(h)">Discard {{ h.picked.size ? h.picked.size + ' baris' : 'hunk' }}</button>
+                <button class="primary" @click="applyHunk('Stage', h, ['--cached'])">Stage {{ h.picked.size ? h.picked.size + ' baris' : 'hunk' }}</button>
               </template>
-              <button v-else @click="applyHunk('Unstage hunk', h, ['--cached', '--reverse'])">Unstage hunk</button>
-            </span>
-          </div>
-          <table v-if="diffMode === 'split'" class="lines split">
-            <tr v-for="([l, r], k) in split(h.rows)" :key="k">
-              <td class="ln">{{ l?.o }}</td>
-              <td class="src" :class="l?.type ?? 'none'">{{ l?.text }}</td>
-              <td class="ln">{{ r?.n }}</td>
-              <td class="src" :class="r?.type ?? 'none'">{{ r?.text }}</td>
-            </tr>
-          </table>
-          <table v-else class="lines">
-            <tr v-for="(row, k) in h.rows" :key="k">
-              <td class="ln">{{ row.o }}</td>
-              <td class="ln">{{ row.n }}</td>
-              <td class="src" :class="row.type">{{ { add: '+', del: '-', ctx: ' ' }[row.type] }}{{ row.text }}</td>
-            </tr>
-          </table>
-        </section>
+              <button v-else @click="applyHunk('Unstage', h, ['--cached', '--reverse'])">Unstage {{ h.picked.size ? h.picked.size + ' baris' : 'hunk' }}</button>
+            </template>
+          </template>
+        </DiffView>
       </div>
       <div v-else class="history">
         <div class="cols">
@@ -836,6 +900,49 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .plan li.drop select { border-color: #f2665b; color: #f2665b; }
 .plan-help { margin: 0 10px; max-width: 72ch; color: var(--dim); line-height: 1.5; }
 .plan-help b { color: var(--fg); font-weight: 600; }
+
+.lines .pickable { cursor: pointer; }
+.lines .pickable:hover { filter: brightness(1.3); }
+.lines .picked { box-shadow: inset 3px 0 var(--accent); filter: brightness(1.45); }
+.hint-pick { color: var(--dim); font-style: italic; }
+.diff-head .path { color: var(--bone); }
+
+.fileview { display: flex; flex-direction: column; height: 100%; }
+.file-log { list-style: none; margin: 0; padding: 0; max-height: 38%; overflow: auto; flex: none; border-bottom: 1px solid #000; }
+.file-log button {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+}
+.file-log li.sel button { background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: inset 3px 0 var(--accent); }
+.file-log code { color: var(--dim); }
+.file-log .subj { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-log .who { width: 130px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-log .when { width: 130px; color: var(--dim); text-align: right; white-space: nowrap; }
+.file-log-diff { flex: 1; overflow: auto; }
+.blame { margin: 0; }
+.blame tr.first td { border-top: 1px solid var(--line); }
+.blame .who { width: 260px; padding: 0; border-left: 3px solid var(--c); vertical-align: top; }
+.blame .who button {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  padding: 0 8px;
+  text-align: left;
+  color: var(--dim);
+  font: 12px/1.55 system-ui, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.blame .who button:hover { color: var(--accent); }
+.blame .who code { color: var(--fg); }
 .code.C { color: #f2665b; }
 .toolbar {
   grid-column: 1 / -1;

@@ -1,6 +1,6 @@
 // node src/diff.test.js
 import assert from 'node:assert/strict'
-import { parseDiff, hunkPatch, split } from './diff.js'
+import { parseDiff, hunkPatch, split, linesPatch } from './diff.js'
 
 const text = `diff --git a/f b/f
 index 1..2 100644
@@ -28,4 +28,11 @@ const s = split(d.hunks[0].rows)
 assert.equal(s.length, 3)
 assert.deepEqual([s[1][0].text, s[1][1].text], ['b', 'B']) // deletion paired with its replacement
 assert.deepEqual(split(d.hunks[1].rows)[1], [null, d.hunks[1].rows[1]])
+// pick only "+B" of "-b +B +C": forward turns -b into context and drops +C
+const one = parseDiff('--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@\n a\n-b\n+B\n+C\n')
+const h0 = one.hunks[0]
+const pickB = new Set([h0.rows.find(r => r.text === 'B').ri])
+assert.equal(linesPatch(one, h0, pickB, false), '--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@\n a\n b\n+B\n')
+// reverse (unstage/discard "+B" only): -b is dropped, +C becomes context
+assert.equal(linesPatch(one, h0, pickB, true), '--- a/f\n+++ b/f\n@@ -1,2 +1,3 @@\n a\n+B\n C\n')
 console.log('diff ok')
