@@ -15,7 +15,8 @@ import Welcome from './Welcome.vue'
 import Settings from './Settings.vue'
 import { settings } from './settings.js'
 import { readIdentity, parseSig, avatar } from './identity.js'
-import PullButton from './PullButton.vue'
+import PullButton, { MODES as PULL_MODES } from './PullButton.vue'
+import Palette from './Palette.vue'
 import SidebarExtras from './SidebarExtras.vue'
 import { loadFilter, saveFilter, toggleHidden, toggleSolo, logRefs, NO_FILTER, dropActions } from './branchops.js'
 import logo from './assets/puake.svg'
@@ -787,6 +788,37 @@ watch(() => settings.fetchMinutes, m => {
   if (m) fetchTimer = setInterval(autoFetch, m * 60 * 1000)
 }, { immediate: true })
 
+// Command palette entries; `keys` doubles as the global shortcut (see the keydown handler).
+const showPalette = ref(false)
+const cycleTab = d => tabs.value.length > 1 && openPath(tabs.value.at((tabs.value.indexOf(repo.value) + d) % tabs.value.length))
+const commands = computed(() => {
+  if (!repo.value) return []
+  const idle = fn => () => !busy.value && fn()
+  return [
+    { label: 'Fetch semua remote', keys: 'F5', run: idle(fetchAll) },
+    ...Object.values(PULL_MODES).map(m => ({ label: m.label, run: idle(() => pull(m.args)) })),
+    { label: 'Push', keys: 'Ctrl+Shift+K', run: idle(push) },
+    { label: 'Stash perubahan', keys: 'Ctrl+Shift+S', run: idle(() => dirty.value && stash()) },
+    { label: 'Pop stash teratas', run: idle(() => stashes.value.length && stashDo('pop', stashes.value[0])) },
+    { label: 'Undo', keys: 'Ctrl+Z', run: idle(undo) },
+    { label: 'Cari commit', keys: 'Ctrl+F', run: () => nextTick(() => searchEl.value?.focus()) },
+    { label: 'Terapkan patch…', run: idle(applyPatch) },
+    ...(isGitHub.value && head.value ? [{ label: 'Buat pull request', run: idle(openPRForm) }] : []),
+    { label: 'Diff split', run: () => setDiffMode('split') },
+    { label: 'Diff unified', run: () => setDiffMode('unified') },
+    { label: 'Pengaturan', keys: 'Ctrl+,', run: () => (showSettings.value = true) },
+    { label: 'Buka repository…', keys: 'Ctrl+O', run: openRepo },
+    { label: 'Tab berikutnya', keys: 'Ctrl+Tab', run: () => cycleTab(1) },
+    { label: 'Tab sebelumnya', keys: 'Ctrl+Shift+Tab', run: () => cycleTab(-1) },
+    { label: 'Tutup tab', keys: 'Ctrl+W', run: () => closeTab(repo.value) },
+    { label: 'Halaman awal', run: goHome },
+    ...tabs.value.filter(t => t !== repo.value).map(t => ({ label: 'Buka tab ' + t.split('/').at(-1), run: () => openPath(t) })),
+    ...branches.value.local.filter(b => b !== head.value).map(b => ({ label: 'Checkout ' + b, run: idle(() => checkout(b)) })),
+    ...branches.value.remote.map(b => ({ label: 'Checkout ' + b, run: idle(() => checkout(b, true)) })),
+  ]
+})
+const keyName = e => (e.ctrlKey || e.metaKey ? 'Ctrl+' : '') + (e.shiftKey ? 'Shift+' : '') + (e.key.length === 1 ? e.key.toUpperCase() : e.key)
+
 const headTrack = computed(() => branches.value.track?.[head.value] ?? { ahead: 0, behind: 0 })
 
 onMounted(() => {
@@ -799,7 +831,17 @@ onMounted(() => {
       if (compare.value) selectCommit(selected.value)
     }
     const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)
-    if (e.ctrlKey && e.key === 'f' && repo.value) {
+    const k = keyName(e)
+    if ((k === 'Ctrl+P' || k === 'Ctrl+Shift+P') && repo.value) {
+      e.preventDefault()
+      showPalette.value = !showPalette.value
+      return
+    }
+    const cmd = !showPalette.value && k !== 'Ctrl+Z' && k !== 'Ctrl+F' && commands.value.find(c => c.keys === k)
+    if (cmd) {
+      e.preventDefault()
+      cmd.run()
+    } else if (e.ctrlKey && e.key === 'f' && repo.value) {
       e.preventDefault()
       searchEl.value?.focus()
     } else if (e.ctrlKey && e.key === 'z' && !typing && repo.value) {
@@ -849,7 +891,8 @@ onMounted(() => {
           @keydown.esc="query = ''"
         />
         <small v-if="matches" class="busy">{{ matches.size }} hasil</small>
-        <button title="Pengaturan" aria-label="Pengaturan" @click="showSettings = true">⚙</button>
+        <button title="Perintah (Ctrl+P)" aria-label="Perintah" @click="showPalette = true">⌘</button>
+        <button title="Pengaturan (Ctrl+,)" aria-label="Pengaturan" @click="showSettings = true">⚙</button>
       </template>
     </header>
 
@@ -1338,6 +1381,7 @@ onMounted(() => {
     </form>
   </div>
 
+  <Palette v-if="showPalette && repo" :commands="commands" @close="showPalette = false" />
   <Settings v-if="showSettings && repo" :repo="repo" :run="run" @close="showSettings = false" />
   <div v-if="info" class="error info" @click="info = ''">
     <pre>{{ info }}</pre>

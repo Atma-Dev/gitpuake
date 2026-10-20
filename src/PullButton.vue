@@ -1,14 +1,17 @@
+<script>
+export const MODES = {
+  merge: { label: 'Pull (merge)', args: ['--no-rebase'] },
+  rebase: { label: 'Pull (rebase)', args: ['--rebase', '--autostash'] },
+  ff: { label: 'Fast-forward saja', args: ['--ff-only'] },
+}
+</script>
+
 <script setup>
 // Pull button with a mode caret; picking a mode pulls with it and makes it the default.
 import { ref } from 'vue'
 
 defineProps({ disabled: Boolean, behind: Number })
 const emit = defineEmits(['pull'])
-const MODES = {
-  merge: { label: 'Pull (merge)', args: ['--no-rebase'] },
-  rebase: { label: 'Pull (rebase)', args: ['--rebase', '--autostash'] },
-  ff: { label: 'Fast-forward saja', args: ['--ff-only'] },
-}
 const mode = ref(MODES[localStorage.getItem('pullMode')] ? localStorage.getItem('pullMode') : 'merge')
 function pick(e) {
   localStorage.setItem('pullMode', (mode.value = e.target.value))
