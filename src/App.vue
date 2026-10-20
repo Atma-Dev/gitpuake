@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open, ask } from '@tauri-apps/plugin-dialog'
 import { LOG_FORMAT, parseLog, layout } from './graph.js'
@@ -15,7 +15,9 @@ const ROW = 34
 const LANE = 22
 const REFS = 180
 const COLORS = ['#2fb7f5', '#e65c9c', '#8ee05b', '#f5a623', '#a77bf3', '#36d6c3', '#f2665b', '#d6d14a']
-const MAX_COMMITS = 1000 // ponytail: no virtual scrolling, raise or virtualize if huge histories matter
+const MAX_COMMITS = 20000 // ponytail: whole log is held in memory; page with --skip if bigger histories matter
+const AUTO_FETCH_MS = 5 * 60 * 1000
+const OVERSCAN = 15 // extra rows rendered above/below the viewport
 
 const repo = ref(localStorage.getItem('repo') || '')
 const commits = ref([])
@@ -178,7 +180,7 @@ function nextMatch(back) {
   const i = list.findIndex(c => c.hash === selected.value)
   const c = i < 0 ? list[0] : list[(i + (back ? -1 : 1) + list.length) % list.length]
   selectCommit(c.hash)
-  document.getElementById('c-' + c.hash)?.scrollIntoView({ block: 'center' })
+  scrollToCommit(c.hash)
 }
 
 async function refresh() {
@@ -337,7 +339,7 @@ function jumpTo(hash) {
   fileView.value = null
   diff.value = null
   selectCommit(hash)
-  setTimeout(() => document.getElementById('c-' + hash)?.scrollIntoView({ block: 'center' }))
+  nextTick(() => scrollToCommit(hash))
 }
 
 const stage = p => run('Stage', () => g('add', '--', p))
@@ -456,7 +458,41 @@ async function removeBranch(b) {
   run('Delete branch', () => g('branch', '-d', b), () => g('branch', b, hash))
 }
 
-const fetchAll = () => run('Fetch', () => g('fetch', '--all', '--prune'))
+const lastFetch = ref(0)
+const fetchAll = () =>
+  run('Fetch', async () => {
+    await g('fetch', '--all', '--prune')
+    lastFetch.value = Date.now()
+  })
+// Quiet background fetch; failures (offline, auth) just wait for the next round.
+async function autoFetch() {
+  if (!repo.value || busy.value || !remotes.value.length || document.hidden) return
+  try {
+    await g('fetch', '--all', '--prune', '--quiet')
+    lastFetch.value = Date.now()
+    await refresh()
+  } catch {}
+}
+
+// Virtual scroll: only rows near the viewport of the history are rendered.
+const mainEl = ref(null)
+const scrollTop = ref(0)
+const viewH = ref(window.innerHeight)
+function onScroll() {
+  scrollTop.value = mainEl.value.scrollTop
+  viewH.value = mainEl.value.clientHeight
+}
+const visible = computed(() => {
+  const first = Math.max(0, Math.floor(scrollTop.value / ROW) - OVERSCAN)
+  const last = Math.min(commits.value.length, Math.ceil((scrollTop.value + viewH.value) / ROW) + OVERSCAN)
+  return { first, list: commits.value.slice(first, last) }
+})
+function scrollToCommit(hash) {
+  const i = commits.value.findIndex(c => c.hash === hash)
+  if (i >= 0 && mainEl.value) mainEl.value.scrollTop = (i + 1) * ROW - mainEl.value.clientHeight / 2
+}
+// returning from a diff/plan/file view re-mounts the history; resync the window
+watch([diff, plan, fileView], () => nextTick(() => mainEl.value && onScroll()))
 const pull = () => act('Pull', ['pull'], p => resetBack(p.hash))
 const firstRemote = () => remotes.value.find(r => r.name === 'origin')?.name ?? remotes.value[0]?.name ?? 'origin'
 const push = () =>
@@ -499,6 +535,7 @@ const headTrack = computed(() => branches.value.track?.[head.value] ?? { ahead: 
 
 onMounted(() => {
   refresh()
+  setInterval(autoFetch, AUTO_FETCH_MS)
   window.addEventListener('focus', refresh)
   window.addEventListener('click', () => (menu.value = null))
   window.addEventListener('keydown', e => {
@@ -524,7 +561,7 @@ onMounted(() => {
       <span class="repo" :title="repo">{{ repo ? repo.split('/').at(-1) : 'Belum ada repo' }}</span>
       <template v-if="repo">
         <span class="sep" />
-        <button :disabled="!!busy" @click="fetchAll">⟳ Fetch</button>
+        <button :disabled="!!busy" :title="'Fetch otomatis tiap 5 menit' + (lastFetch ? '. Terakhir: ' + ago(lastFetch / 1000) : '')" @click="fetchAll">⟳ Fetch</button>
         <button :disabled="!!busy" @click="pull">↓ Pull<b v-if="headTrack.behind" class="count">{{ headTrack.behind }}</b></button>
         <button :disabled="!!busy" @click="push">↑ Push<b v-if="headTrack.ahead" class="count">{{ headTrack.ahead }}</b></button>
         <span class="sep" />
@@ -630,7 +667,7 @@ onMounted(() => {
       <button class="primary" :disabled="status.conflicts.length > 0 || !!busy" @click="continueOp">Continue</button>
     </div>
 
-    <main class="main" v-if="repo">
+    <main ref="mainEl" class="main" v-if="repo" @scroll.passive="onScroll">
       <div v-if="plan" class="rebase">
         <div class="diff-head">
           <b>Interactive rebase</b>
@@ -743,18 +780,18 @@ onMounted(() => {
           <span class="author">Author</span>
           <span class="date">Waktu</span>
         </div>
-        <div class="rows">
+        <div class="rows" :style="{ height: (commits.length + 1) * ROW + 'px' }">
           <svg class="graph" :style="{ left: REFS + 'px' }" :width="x(graphWidth)" :height="(commits.length + 1) * ROW">
             <path v-if="dirty && headRow >= 0" :d="`M${x(headCol)} ${ROW / 2} V${(headRow + 1.5) * ROW}`" stroke="#8a90a0" stroke-width="2" stroke-dasharray="3 4" />
-            <template v-for="(c, r) in commits" :key="c.hash">
-              <path v-for="(l, k) in c.lines" :key="k" :d="path(l, r + 1)" :stroke="color(l[2] === 'top' ? l[0] : l[1])" fill="none" stroke-width="2.5" stroke-linecap="round" />
+            <template v-for="(c, k) in visible.list" :key="c.hash">
+              <path v-for="(l, j) in c.lines" :key="j" :d="path(l, visible.first + k + 1)" :stroke="color(l[2] === 'top' ? l[0] : l[1])" fill="none" stroke-width="2.5" stroke-linecap="round" />
             </template>
-            <template v-for="(c, r) in commits" :key="c.hash">
-              <line v-if="c.pills.length" x1="0" :x2="x(c.col)" :y1="(r + 1.5) * ROW" :y2="(r + 1.5) * ROW" :stroke="color(c.col)" stroke-width="2" opacity="0.6" />
-              <circle v-if="c.parents.length > 1" :cx="x(c.col)" :cy="(r + 1.5) * ROW" r="5" :fill="color(c.col)" stroke="#0f1813" stroke-width="2" />
+            <template v-for="(c, k) in visible.list" :key="c.hash">
+              <line v-if="c.pills.length" x1="0" :x2="x(c.col)" :y1="(visible.first + k + 1.5) * ROW" :y2="(visible.first + k + 1.5) * ROW" :stroke="color(c.col)" stroke-width="2" opacity="0.6" />
+              <circle v-if="c.parents.length > 1" :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="5" :fill="color(c.col)" stroke="#0f1813" stroke-width="2" />
               <g v-else>
-                <circle :cx="x(c.col)" :cy="(r + 1.5) * ROW" r="11" :fill="avatarColor(c.author)" :stroke="selected === c.hash ? '#fff' : color(c.col)" stroke-width="2.5" />
-                <text :x="x(c.col)" :y="(r + 1.5) * ROW" dy=".35em" text-anchor="middle" class="ini">{{ initials(c.author) }}</text>
+                <circle :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="11" :fill="avatarColor(c.author)" :stroke="selected === c.hash ? '#fff' : color(c.col)" stroke-width="2.5" />
+                <text :x="x(c.col)" :y="(visible.first + k + 1.5) * ROW" dy=".35em" text-anchor="middle" class="ini">{{ initials(c.author) }}</text>
               </g>
             </template>
             <circle v-if="dirty" :cx="x(headCol)" :cy="ROW / 2" r="9" fill="#0f1813" stroke="#8a90a0" stroke-width="2" stroke-dasharray="3 3" />
@@ -764,7 +801,12 @@ onMounted(() => {
             <span :style="{ width: x(graphWidth) + 'px' }" class="gutter" />
             <span class="subject">// WIP <small v-if="dirty">({{ status.staged.length + status.unstaged.length + status.conflicts.length }} file berubah)</small></span>
           </div>
-          <div v-for="c in commits" :key="c.hash" class="row" :id="'c-' + c.hash" :class="{ sel: selected === c.hash, dim: matches && !matches.has(c.hash) }" :style="{ '--c': color(c.col) }" @click="selectCommit(c.hash)" @contextmenu.prevent="openMenu($event, c)">
+          <div
+            v-for="(c, k) in visible.list"
+            :key="c.hash"
+            class="row"
+            :class="{ sel: selected === c.hash, dim: matches && !matches.has(c.hash) }"
+            :style="{ '--c': color(c.col), top: (visible.first + k + 1) * ROW + 'px' }" @click="selectCommit(c.hash)" @contextmenu.prevent="openMenu($event, c)">
             <span class="refs" :style="{ width: REFS + 'px' }">
               <template v-if="c.pills.length">
                 <span class="pill" :class="{ head: c.pills[0].head }" :title="c.pills[0].name">
@@ -1113,6 +1155,7 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .row:hover { background: color-mix(in srgb, var(--c) 10%, transparent); }
 .row.sel { background: color-mix(in srgb, var(--c) 24%, transparent); box-shadow: inset 3px 0 var(--c); }
 .row.wip { color: var(--dim); font-style: italic; }
+.rows > .row { position: absolute; left: 0; right: 0; }
 .gutter, .refs { flex: none; }
 .refs { display: flex; justify-content: flex-end; gap: 3px; overflow: hidden; }
 .pill {
