@@ -10,6 +10,8 @@ import { highlightRows } from './highlight.js'
 import { parseConflicts, compose } from './merge.js'
 import { ACTIONS, buildTodo, validate } from './rebase.js'
 import Welcome from './Welcome.vue'
+import PullButton from './PullButton.vue'
+import SidebarExtras from './SidebarExtras.vue'
 import logo from './assets/puake.svg'
 
 const ROW = 34
@@ -507,7 +509,22 @@ function createBranch() {
 }
 // `switch foo` for a remote origin/foo creates a local tracking branch.
 const checkout = (b, remote) => act('Checkout', ['switch', remote ? b.slice(b.indexOf('/') + 1) : b], p => () => goBack(p))
-const merge = b => act('Merge', ['merge', b], p => resetBack(p.hash))
+const MERGE_MODES = { merge: 'Merge', '--no-ff': 'Merge --no-ff (selalu buat merge commit)', squash: 'Squash (stage saja, commit sendiri)' }
+async function merge(b, mode = 'merge') {
+  if (mode !== 'squash') return act('Merge', ['merge', ...(mode === 'merge' ? [] : [mode]), b], p => resetBack(p.hash))
+  // undo is reset --merge, which would also wipe changes staged before; so start from an empty index
+  if (status.value.staged.length) return (error.value = 'Squash butuh area staged yang kosong. Commit atau unstage dulu perubahanmu.')
+  run(
+    'Squash',
+    async () => {
+      await g('merge', '--squash', b)
+      msg.value = `Squash branch ${b}`
+      selectCommit('WIP')
+      info.value = `Perubahan dari ${b} sudah di-stage tapi belum di-commit. Periksa, lalu klik Commit untuk menyelesaikan squash.`
+    },
+    () => g('reset', '--merge'),
+  )
+}
 async function removeBranch(b) {
   if (!(await ask(`Hapus branch "${b}"?`, { kind: 'warning' }))) return
   const hash = (await g('rev-parse', b)).trim()
@@ -550,7 +567,7 @@ function scrollToCommit(hash) {
 }
 // returning from a diff/plan/file view re-mounts the history; resync the window
 watch([diff, plan, fileView, mergeView], () => nextTick(() => mainEl.value && onScroll()))
-const pull = () => act('Pull', ['pull'], p => resetBack(p.hash))
+const pull = flags => act('Pull', ['pull', ...flags], p => resetBack(p.hash))
 // GitHub pull requests through the user's `gh` CLI.
 const isGitHub = computed(() => remotes.value.some(r => /github\.com/.test(r.url)))
 const prs = ref(null) // null | { list } | { error: 'missing' | 'auth' | message }
@@ -662,7 +679,7 @@ onMounted(() => {
     <header class="toolbar">
       <template v-if="repo">
         <button :disabled="!!busy" :title="'Fetch otomatis tiap 5 menit' + (lastFetch ? '. Terakhir: ' + ago(lastFetch / 1000) : '')" @click="fetchAll">⟳ Fetch</button>
-        <button :disabled="!!busy" @click="pull">↓ Pull<b v-if="headTrack.behind" class="count">{{ headTrack.behind }}</b></button>
+        <PullButton :disabled="!!busy" :behind="headTrack.behind" @pull="pull" />
         <button :disabled="!!busy" @click="push">↑ Push<b v-if="headTrack.ahead" class="count">{{ headTrack.ahead }}</b></button>
         <span class="sep" />
         <button :disabled="!!busy || !dirty" @click="stash">⊞ Stash</button>
@@ -699,7 +716,10 @@ onMounted(() => {
           <template v-if="branches.track[b].behind"> ↓{{ branches.track[b].behind }}</template>
         </span>
         <span class="actions" v-if="b !== head">
-          <button title="Merge ke branch aktif" @click="merge(b)">⤵</button>
+          <select class="merge-pick" title="Merge ke branch aktif" :aria-label="'Merge ' + b" @change="merge(b, $event.target.value); $event.target.value = ''; $event.target.blur()">
+            <option value="" hidden>⤵</option>
+            <option v-for="(l, k) in MERGE_MODES" :key="k" :value="k">{{ l }}</option>
+          </select>
           <button title="Rebase branch aktif ke branch ini" @click="rebaseOnto(b)">⤴</button>
           <button title="Hapus" @click="removeBranch(b)">✕</button>
         </span>
@@ -728,7 +748,10 @@ onMounted(() => {
         <div v-for="b in branches.remote.filter(b => b.startsWith(r.name + '/'))" :key="b" class="branch nested" @dblclick="checkout(b, true)">
           <span class="name" :title="b">{{ b.slice(r.name.length + 1) }}</span>
           <span class="actions">
-            <button title="Merge ke branch aktif" @click="merge(b)">⤵</button>
+            <select class="merge-pick" title="Merge ke branch aktif" :aria-label="'Merge ' + b" @change="merge(b, $event.target.value); $event.target.value = ''; $event.target.blur()">
+              <option value="" hidden>⤵</option>
+              <option v-for="(l, k) in MERGE_MODES" :key="k" :value="k">{{ l }}</option>
+            </select>
             <button title="Rebase branch aktif ke branch ini" @click="rebaseOnto(b)">⤴</button>
           </span>
         </div>
@@ -778,6 +801,7 @@ onMounted(() => {
           </span>
         </div>
       </template>
+      <SidebarExtras :repo="repo" :g="g" :run="run" :branches="branches.local" :tick="commits" @open="openPath" @close="closeTab" />
       <p class="hint">Double-click branch untuk checkout · klik kanan commit untuk aksi lain</p>
     </aside>
 
@@ -1395,7 +1419,9 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actions { display: none; gap: 2px; }
 .actions button, .file button { padding: 0 6px; font-size: 11px; }
-.branch:hover .actions { display: flex; }
+.branch:hover .actions, .actions:focus-within { display: flex; }
+.merge-pick { appearance: none; -webkit-appearance: none; padding: 0 6px; font: inherit; font-size: 11px; color: var(--fg); background: var(--bg3); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+.merge-pick:hover { border-color: var(--accent); }
 .file button { visibility: hidden; }
 .file:hover button { visibility: visible; }
 .hint { color: var(--dim); font-size: 11px; }
