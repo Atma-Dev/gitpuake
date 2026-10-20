@@ -6,18 +6,20 @@ Fitur: commit graph, stage/unstage per file, per hunk, atau per baris, riwayat f
 branch (buat/checkout/merge/rebase/hapus), interactive rebase, undo (Ctrl+Z), banner conflict, cari commit (Ctrl+F),
 ahead/behind, menu klik kanan commit (checkout, branch, tag, cherry-pick, revert, reset), kelola remote & tag,
 fetch/pull/push (force push dengan --force-with-lease saat ditolak), auto-fetch (interval diatur di Pengaturan), tab multi-repo,
-editor merge conflict, virtual scroll (hingga 20.000 commit), Pull Request GitHub (lihat, checkout, buat),
+editor merge conflict, virtual scroll (hingga 20.000 commit), Pull Request GitHub (lihat, checkout, buat, detail: checks, komentar, review, merge, diff file),
+issue (lihat, buat, buat branch dari issue), Merge Request & issue GitLab, link PR Bitbucket di browser,
 halaman Pengaturan (identitas git lokal/global, profil identitas sekali klik, diff bawaan), status tanda tangan commit,
 avatar Gravatar (mati secara bawaan karena mengirim hash email author ke gravatar.com),
 pull merge/rebase/fast-forward, merge --no-ff/squash, submodule, worktree, Git LFS (pull, track pola),
 bandingkan dua commit (Ctrl+klik), seret branch untuk merge/rebase, filter graph (sembunyikan / solo branch),
-opsi diff (abaikan spasi, beda per kata), diff gambar berdampingan, simpan / terapkan patch (format-patch, am, apply), dan stash per file.
+opsi diff (abaikan spasi, beda per kata), diff gambar berdampingan, simpan / terapkan patch (format-patch, am, apply), stash per file, dan command palette (Ctrl+P) dengan shortcut keyboard.
 
 
 ## Jalankan
 
 Butuh: Rust (`~/.cargo/bin` di PATH), Node, git, dan dependency sistem Tauri (webkit2gtk-4.1).
-Opsional: [GitHub CLI](https://cli.github.com) (`gh auth login`) untuk fitur Pull Request.
+Opsional: [GitHub CLI](https://cli.github.com) (`gh auth login`) untuk fitur Pull Request & issue,
+[GitLab CLI](https://gitlab.com/gitlab-org/cli) (`glab auth login`) untuk Merge Request GitLab.
 
 ```sh
 npm install
