@@ -1,11 +1,13 @@
 <script setup>
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { open, ask } from '@tauri-apps/plugin-dialog'
+import { open, ask, message } from '@tauri-apps/plugin-dialog'
 import { LOG_FORMAT, parseLog, layout } from './graph.js'
 import { parseDiff, hunkPatch, linesPatch } from './diff.js'
 import { parseBlame } from './blame.js'
 import DiffView from './DiffView.vue'
+import ImageDiff, { isImage } from './ImageDiff.vue'
+import { markWords } from './words.js'
 import { highlightRows } from './highlight.js'
 import { parseConflicts, compose } from './merge.js'
 import { ACTIONS, buildTodo, validate } from './rebase.js'
@@ -49,6 +51,8 @@ const diffMode = computed(() => settings.diffMode)
 const showSettings = ref(false)
 const identity = ref(null) // effective user.name / user.email, shown in the commit box
 const sig = ref(null) // signature status of the selected commit
+const ignoreWs = ref(localStorage.getItem('ignoreWs') === '1') // display-only `git diff -w`
+const wordsOn = ref(localStorage.getItem('wordsOn') !== '0') // word marks instead of syntax colors on changed pairs
 
 const g = (...args) => invoke('git', { repo: repo.value, args })
 const gIn = (input, ...args) => invoke('git', { repo: repo.value, args, input })
@@ -197,7 +201,7 @@ async function refresh() {
   if (!repo.value) return
   readIdentity(g).then(id => (identity.value = id))
   try {
-    const [log, st, refs, cur, stash, ops, remoteUrls, tagRefs] = await Promise.all([
+    const [log, st, refs, cur, stash, ops, remoteUrls, tagRefs, amOp] = await Promise.all([
       // empty repo has no log; stashes are listed in the sidebar instead of the graph
       g('log', ...logRefs(filter.value), '--topo-order', '-n', String(MAX_COMMITS), LOG_FORMAT).catch(() => ''),
       g('status', '--porcelain=v1', '-z', '-uall'),
@@ -207,6 +211,7 @@ async function refresh() {
       Promise.all(Object.keys(OPS).map(r => g('rev-parse', '-q', '--verify', r))), // missing ref -> ''
       g('config', '--get-regexp', '^remote\\..*\\.url$'), // no remotes -> ''
       g('for-each-ref', '--sort=-creatordate', '--format=%(refname:short)%1f%(objectname)%1f%(*objectname)', 'refs/tags'),
+      g('am', '--show-current-patch=raw').then(() => 'am', () => ''), // am leaves no ref; this fails outside an am session
     ])
     remotes.value = remoteUrls.split('\n').filter(Boolean).map(l => {
       const sp = l.indexOf(' ')
@@ -220,7 +225,7 @@ async function refresh() {
       const [ref, subject] = l.split('\x1f')
       return { ref, subject }
     })
-    operation.value = Object.values(OPS)[ops.findIndex(o => o.trim())] ?? ''
+    operation.value = Object.values(OPS)[ops.findIndex(o => o.trim())] ?? amOp
     const rows = refs.split('\n').map(l => l.split('\x1f')).filter(([r]) => r && !r.endsWith('/HEAD'))
     const track = {}
     for (const [r, t] of rows) {
@@ -300,7 +305,7 @@ function goHome() {
 const nameStatus = out =>
   out.split('\n').filter(Boolean).map(l => {
     const [code, ...paths] = l.split('\t')
-    return { code: code[0], path: paths.at(-1) }
+    return { code: code[0], path: paths.at(-1), from: paths[0] } // from: old path of a rename
   })
 async function selectCommit(hash) {
   selected.value = hash
@@ -331,24 +336,34 @@ watch(selected, async h => {
 
 async function showDiff(file, kind) {
   const p = file.path
+  const ws = ignoreWs.value ? ['-w'] : []
   let text
-  if (kind === 'commit') text = await g('show', '--format=', '--diff-merges=first-parent', selected.value, '--', p)
-  else if (kind === 'compare') text = await g('diff', compare.value.a, compare.value.b, '--', p)
-  else if (kind === 'staged') text = await g('diff', '--cached', '--', p)
+  if (kind === 'commit') text = await g('show', ...ws, '--format=', '--diff-merges=first-parent', selected.value, '--', p)
+  else if (kind === 'compare') text = await g('diff', ...ws, compare.value.a, compare.value.b, '--', p)
+  else if (kind === 'staged') text = await g('diff', ...ws, '--cached', '--', p)
   else if (file.code === 'U' || file.code === 'C') text = await g('diff', '--no-index', '--', '/dev/null', p) // conflict: whole file with markers
-  else text = await g('diff', '--', p)
+  else text = await g('diff', ...ws, '--', p)
   const d = parseDiff(text)
   fileView.value = mergeView.value = null
   for (const h of d.hunks) {
     h.picked = new Set() // raw line indexes picked for line-level staging
     highlightRows(h.rows, p)
+    markWords(h.rows)
   }
-  diff.value = { file, kind, d }
+  diff.value = { file, kind, d, ws: !!ws.length }
 }
 
 const setDiffMode = m => (settings.diffMode = m)
+const toggleWords = () => localStorage.setItem('wordsOn', (wordsOn.value = !wordsOn.value) ? '1' : '0')
+function toggleWs() {
+  localStorage.setItem('ignoreWs', (ignoreWs.value = !ignoreWs.value) ? '1' : '0')
+  if (diff.value) showDiff(diff.value.file, diff.value.kind)
+  const fv = fileView.value
+  if (fv?.type === 'history' && fv.sel) pickHistory(fv.items.find(it => it.hash === fv.sel))
+}
 // Untracked files have no index entry to patch, so they are staged whole.
-const hunkable = computed(() => diff.value && diff.value.kind !== 'commit' && !'UC'.includes(diff.value.file.code))
+// A `-w` diff does not match the files byte for byte, so it can't be applied either.
+const hunkable = computed(() => diff.value && diff.value.kind !== 'commit' && !'UC'.includes(diff.value.file.code) && !diff.value.ws)
 // Applies hunk `h` of the open diff, or only its picked lines when some are picked.
 async function applyHunk(label, h, flags, undoFor) {
   const { file, kind, d } = diff.value
@@ -406,8 +421,11 @@ async function openHistory(path) {
 }
 async function pickHistory(it) {
   fileView.value.sel = it.hash
-  const d = parseDiff(await g('show', '--format=', '--diff-merges=first-parent', it.hash, '--', it.path))
-  for (const h of d.hunks) highlightRows(h.rows, it.path)
+  const d = parseDiff(await g('show', ...(ignoreWs.value ? ['-w'] : []), '--format=', '--diff-merges=first-parent', it.hash, '--', it.path))
+  for (const h of d.hunks) {
+    highlightRows(h.rows, it.path)
+    markWords(h.rows)
+  }
   fileView.value.d = d
 }
 async function openBlame(path, rev) {
@@ -466,10 +484,54 @@ async function stashDo(action, s) {
   const hash = (await g('rev-parse', s.ref)).trim()
   run('Drop stash', () => g('stash', 'drop', s.ref), () => g('stash', 'store', '-m', s.subject, hash))
 }
+// Stashes one file's changes (staged, unstaged or untracked); undo pops it back if it is still on top.
+async function stashFile(f) {
+  const top = async () => (await g('rev-parse', '-q', '--verify', 'refs/stash')).trim()
+  const before = await top()
+  let hash = ''
+  run(
+    'Stash file',
+    async () => {
+      await g('stash', 'push', '-u', '-m', 'gitpuake: ' + f.path, '--', f.path)
+      if ((hash = await top()) === before) throw new Error('Tidak ada perubahan untuk di-stash')
+    },
+    async () => {
+      if ((await top()) !== hash) throw new Error(`Stash "${f.path}" sudah bukan stash@{0}. Pop manual dari sidebar.`)
+      await g('stash', 'pop', '--index')
+    },
+  )
+}
+
+// Patches: export a commit with format-patch, import with am (as a commit) or apply (working tree only).
+async function savePatch() {
+  const { hash } = menu.value
+  menu.value = null
+  // format-patch skips merges and would quietly export an older commit instead
+  if (selectedCommit.value?.parents.length > 1) return (error.value = 'Merge commit tidak bisa disimpan sebagai patch.')
+  const dir = await open({ directory: true, title: 'Simpan patch ke folder' })
+  if (!dir) return
+  run('Simpan patch', async () => (info.value = 'Patch disimpan: ' + (await g('format-patch', '-1', hash, '-o', dir)).trim()))
+}
+async function applyPatch() {
+  const file = await open({ title: 'Pilih patch', filters: [{ name: 'Patch', extensions: ['patch', 'diff'] }] })
+  if (!file) return
+  const AM = 'Jadikan commit (git am)', APPLY = 'Working tree saja (git apply)'
+  const r = await message(`Terapkan ${file.split('/').pop()}?\n\ngit am butuh patch dari format-patch dan membuat commit. git apply hanya mengubah file.`, {
+    title: 'Terapkan patch',
+    buttons: { yes: AM, no: APPLY, cancel: 'Batal' },
+  })
+  if (r === AM || r === 'Yes') {
+    const prev = await headHash()
+    // a conflict leaves an am session; the banner offers abort / continue
+    run('Terapkan patch', () => g('am', '--3way', file), resetBack(prev))
+  } else if (r === APPLY || r === 'No')
+    // ponytail: undo re-reads the patch file; if it was edited or moved meanwhile, undo fails
+    run('Terapkan patch', () => g('apply', file), () => g('apply', '-R', file))
+}
 
 function openMenu(e, c) {
   selectCommit(c.hash)
-  menu.value = { x: Math.min(e.clientX, innerWidth - 240), y: Math.min(e.clientY, innerHeight - 440), hash: c.hash, input: null, value: '' }
+  menu.value = { x: Math.min(e.clientX, innerWidth - 240), y: Math.min(e.clientY, innerHeight - 470), hash: c.hash, input: null, value: '' }
 }
 // Runs a HEAD-changing action; `undoFor(prev)` builds its undo from the HEAD state before it ran.
 async function act(label, args, undoFor) {
@@ -769,6 +831,7 @@ onMounted(() => {
         <span class="sep" />
         <button :disabled="!!busy || !dirty" @click="stash">⊞ Stash</button>
         <button :disabled="!!busy || !stashes.length" @click="stashDo('pop', stashes[0])">⊟ Pop</button>
+        <button :disabled="!!busy" title="Terapkan file .patch atau .diff" @click="applyPatch">⎘ Patch</button>
         <span class="sep" />
         <span class="head">⎇ {{ head || '(detached)' }}</span>
         <button v-if="isGitHub && head" :disabled="!!busy" title="Push branch ini lalu buat pull request di GitHub" @click="openPRForm">⇪ Buat PR</button>
@@ -922,7 +985,7 @@ onMounted(() => {
     </aside>
 
     <div v-if="operation" class="op-banner">
-      <b>{{ { rebase: 'Rebase', merge: 'Merge', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[operation] }} sedang berlangsung.</b>
+      <b>{{ { rebase: 'Rebase', merge: 'Merge', 'cherry-pick': 'Cherry-pick', revert: 'Revert', am: 'Penerapan patch' }[operation] }} sedang berlangsung.</b>
       <span v-if="status.conflicts.length">
         {{ status.conflicts.length }} file conflict. Klik file di panel kanan untuk memilih versi yang dipakai.
       </span>
@@ -1041,7 +1104,7 @@ onMounted(() => {
             </li>
           </ol>
           <div class="file-log-diff">
-            <DiffView v-if="fileView.d" :d="fileView.d" :mode="diffMode" />
+            <DiffView v-if="fileView.d" :d="fileView.d" :mode="diffMode" :words="wordsOn" />
           </div>
         </template>
         <table v-else class="lines blame">
@@ -1062,16 +1125,20 @@ onMounted(() => {
           <b>{{ diff.file.path }}</b>
           <small>{{ { commit: 'commit ' + selected.slice(0, 7), staged: 'staged', unstaged: 'unstaged', compare: compare && compare.a.slice(0, 7) + '..' + compare.b.slice(0, 7) }[diff.kind] }}</small>
           <small v-if="hunkable" class="hint-pick">klik baris +/− untuk memilih baris tertentu</small>
+          <small v-else-if="diff.ws && diff.kind !== 'commit'" class="hint-pick">matikan "Abaikan spasi" untuk stage per hunk</small>
           <span class="spacer" />
           <button v-if="diff.file.code !== 'U'" @click="openHistory(diff.file.path)">Riwayat</button>
           <button v-if="diff.file.code !== 'D'" @click="openBlame(diff.file.path, diff.kind === 'compare' ? compare.b : diff.kind === 'commit' ? selected : '')">Blame</button>
+          <button :class="{ on: ignoreWs }" class="toggle" title="git diff -w, hanya untuk tampilan" @click="toggleWs">Abaikan spasi</button>
+          <button :class="{ on: wordsOn }" class="toggle" title="Tandai kata yang berubah (menggantikan warna sintaks di baris itu)" @click="toggleWords">Beda kata</button>
           <span class="seg">
             <button :class="{ on: diffMode === 'split' }" @click="setDiffMode('split')">Split</button>
             <button :class="{ on: diffMode === 'unified' }" @click="setDiffMode('unified')">Unified</button>
           </span>
           <button @click="diff = null">✕ Tutup</button>
         </div>
-        <DiffView :d="diff.d" :mode="diffMode" :selectable="hunkable">
+        <ImageDiff v-if="isImage(diff.file.path)" :repo="repo" :file="diff.file" :kind="diff.kind" :hash="diff.kind === 'compare' ? compare.b : selected" :base="compare?.a" />
+        <DiffView v-else :d="diff.d" :mode="diffMode" :selectable="hunkable" :words="wordsOn">
           <template #actions="{ h }">
             <template v-if="hunkable">
               <template v-if="diff.kind === 'unstaged'">
@@ -1168,6 +1235,7 @@ onMounted(() => {
             <span class="code" :class="f.code">{{ f.code }}</span>
             <span class="name" :title="f.path">{{ f.path }}</span>
             <button title="Buang perubahan" @click.stop="discard(f)">✕</button>
+            <button title="Stash file ini saja" @click.stop="stashFile(f)">⊞</button>
             <button @click.stop="stage(f.path)">Stage</button>
           </div>
         </div>
@@ -1176,6 +1244,7 @@ onMounted(() => {
           <div v-for="f in status.staged" :key="f.path" class="file" @click="showDiff(f, 'staged')">
             <span class="code" :class="f.code">{{ f.code }}</span>
             <span class="name" :title="f.path">{{ f.path }}</span>
+            <button title="Stash file ini saja (staged dan unstaged)" @click.stop="stashFile(f)">⊞</button>
             <button @click.stop="unstage(f.path)">Unstage</button>
           </div>
         </div>
@@ -1244,6 +1313,7 @@ onMounted(() => {
         <button class="danger" @click="resetTo('hard')">Reset {{ head || 'HEAD' }} ke sini · hard</button>
         <hr />
         <button @click="copyHash">Salin hash</button>
+        <button @click="savePatch">Simpan sebagai patch…</button>
       </template>
     </div>
     <div v-if="dropMenu" class="menu" :style="{ left: dropMenu.x + 'px', top: dropMenu.y + 'px' }" @click.stop>
@@ -1674,7 +1744,7 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .seg button { border-radius: 0; }
 .seg button:first-child { border-radius: 4px 0 0 4px; }
 .seg button:last-child { border-radius: 0 4px 4px 0; border-left: 0; }
-.seg button.on { background: var(--accent); color: #1a1206; }
+.seg button.on, button.toggle.on { background: var(--accent); color: #1a1206; }
 .no-diff { color: var(--dim); padding: 20px; }
 .hunk { margin: 10px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .hunk-head {

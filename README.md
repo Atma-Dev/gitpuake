@@ -10,7 +10,9 @@ editor merge conflict, virtual scroll (hingga 20.000 commit), Pull Request GitHu
 halaman Pengaturan (identitas git lokal/global, profil identitas sekali klik, diff bawaan), status tanda tangan commit,
 avatar Gravatar (mati secara bawaan karena mengirim hash email author ke gravatar.com),
 pull merge/rebase/fast-forward, merge --no-ff/squash, submodule, worktree, Git LFS (pull, track pola),
-bandingkan dua commit (Ctrl+klik), seret branch untuk merge/rebase, dan filter graph (sembunyikan / solo branch).
+bandingkan dua commit (Ctrl+klik), seret branch untuk merge/rebase, filter graph (sembunyikan / solo branch),
+opsi diff (abaikan spasi, beda per kata), diff gambar berdampingan, simpan / terapkan patch (format-patch, am, apply), dan stash per file.
+
 
 ## Jalankan
 

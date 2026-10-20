@@ -63,18 +63,64 @@ fn write_file(repo: String, path: String, content: String) -> Result<(), String>
     std::fs::write(repo_file(&repo, &path)?, content).map_err(|e| e.to_string())
 }
 
+const MAX_IMAGE: usize = 10 * 1024 * 1024;
+
+// Base64 of file bytes for the image diff, refusing anything over MAX_IMAGE.
+fn encode_capped(bytes: &[u8]) -> Result<String, String> {
+    use base64::Engine;
+    if bytes.len() > MAX_IMAGE {
+        return Err(format!("Gambar terlalu besar ({} MB, maks 10 MB)", bytes.len() / 1024 / 1024));
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+// `<rev>:<path>` for `git cat-file`; an empty rev means the index (`:<path>`).
+fn blob_spec(rev: &str, path: &str) -> Result<String, String> {
+    if rev.starts_with('-') {
+        return Err(format!("{rev}: revisi tidak valid"));
+    }
+    Ok(format!("{rev}:{path}"))
+}
+
+// File bytes as base64: from git (`rev` given, "" = index) or from the working tree.
+// ponytail: blobs are read whole before the size check; check `cat-file -s` first if huge blobs matter
+#[tauri::command]
+async fn file_base64(repo: String, path: String, rev: Option<String>) -> Result<String, String> {
+    let Some(rev) = rev else {
+        return encode_capped(&std::fs::read(repo_file(&repo, &path)?).map_err(|e| e.to_string())?);
+    };
+    let out = Command::new("git")
+        .current_dir(&repo)
+        .args(["cat-file", "blob", &blob_spec(&rev, &path)?])
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    encode_capped(&out.stdout)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![git, gh, read_file, write_file])
+        .invoke_handler(tauri::generate_handler![git, gh, read_file, write_file, file_base64])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::repo_file;
+    use super::{MAX_IMAGE, blob_spec, encode_capped, repo_file};
+
+    #[test]
+    fn image_bytes_are_capped_and_encoded() {
+        assert_eq!(encode_capped(b"\x89PNG").unwrap(), "iVBORw==");
+        assert!(encode_capped(&vec![0; MAX_IMAGE + 1]).is_err());
+        assert_eq!(blob_spec("", "a.png").unwrap(), ":a.png");
+        assert_eq!(blob_spec("HEAD~1", "a.png").unwrap(), "HEAD~1:a.png");
+        assert!(blob_spec("--output=x", "a.png").is_err());
+    }
 
     #[test]
     fn repo_file_stays_inside_repo() {
