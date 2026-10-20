@@ -120,7 +120,16 @@ async function removeProfile(i) {
 .profile:hover { background: var(--bg3); }
 .profile button { padding: 1px 8px; font-size: 11px; }
 .row-set { display: flex; justify-content: space-between; align-items: center; }
-.row-set select { background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; font: inherit; }
+.row-set select {
+  appearance: none;
+  -webkit-appearance: none; /* WebKitGTK paints native selects white */
+  padding: 3px 22px 3px 8px;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+  background: var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23849282' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 7px center;
+}
 .avatar-opt { align-items: flex-start; color: var(--fg); }
 .avatar-opt input { margin-top: 3px; }
 .avatar-opt small { display: block; }
