@@ -2,7 +2,7 @@
 name = "gitpuake"
 version = "0.1.0"
 description = "A GitKraken-like git client"
-authors = ["you"]
+authors = ["Atma-Dev"]
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
