@@ -14,7 +14,8 @@
       {
         "title": "gitpuake",
         "width": 1400,
-        "height": 860
+        "height": 860,
+        "dragDropEnabled": false
       }
     ],
     "security": {

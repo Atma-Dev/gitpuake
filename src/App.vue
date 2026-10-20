@@ -15,6 +15,7 @@ import { settings } from './settings.js'
 import { readIdentity, parseSig, avatar } from './identity.js'
 import PullButton from './PullButton.vue'
 import SidebarExtras from './SidebarExtras.vue'
+import { loadFilter, saveFilter, toggleHidden, toggleSolo, logRefs, NO_FILTER, dropActions } from './branchops.js'
 import logo from './assets/puake.svg'
 
 const ROW = 34
@@ -198,7 +199,7 @@ async function refresh() {
   try {
     const [log, st, refs, cur, stash, ops, remoteUrls, tagRefs] = await Promise.all([
       // empty repo has no log; stashes are listed in the sidebar instead of the graph
-      g('log', '--exclude=refs/stash', '--all', '--topo-order', '-n', String(MAX_COMMITS), LOG_FORMAT).catch(() => ''),
+      g('log', ...logRefs(filter.value), '--topo-order', '-n', String(MAX_COMMITS), LOG_FORMAT).catch(() => ''),
       g('status', '--porcelain=v1', '-z', '-uall'),
       g('for-each-ref', '--format=%(refname)%1f%(upstream:track,nobracket)', 'refs/heads', 'refs/remotes'),
       g('branch', '--show-current'),
@@ -296,17 +297,28 @@ function goHome() {
   diff.value = fileView.value = plan.value = mergeView.value = null
 }
 
+const nameStatus = out =>
+  out.split('\n').filter(Boolean).map(l => {
+    const [code, ...paths] = l.split('\t')
+    return { code: code[0], path: paths.at(-1) }
+  })
 async function selectCommit(hash) {
   selected.value = hash
   diff.value = null
   fileView.value = null
+  compare.value = null
   commitFiles.value = []
   if (hash === 'WIP') return
-  const out = await g('show', '--format=', '--name-status', '--diff-merges=first-parent', hash)
-  commitFiles.value = out.split('\n').filter(Boolean).map(l => {
-    const [code, ...paths] = l.split('\t')
-    return { code: code[0], path: paths.at(-1) }
-  })
+  commitFiles.value = nameStatus(await g('show', '--format=', '--name-status', '--diff-merges=first-parent', hash))
+}
+// Ctrl/Cmd+click a second commit: files changed between the pair, older one first.
+const compare = ref(null) // { a, b, files }
+async function pickPair(hash) {
+  if (selected.value === 'WIP' || selected.value === hash) return selectCommit(hash)
+  const at = h => commits.value.findIndex(c => c.hash === h)
+  const [a, b] = [selected.value, hash].sort((p, q) => at(q) - at(p))
+  diff.value = fileView.value = null
+  compare.value = { a, b, files: nameStatus(await g('diff', '--name-status', a, b)) }
 }
 
 // %G? runs gpg per signed commit, so it is only asked for the one commit on screen, not the whole log
@@ -321,6 +333,7 @@ async function showDiff(file, kind) {
   const p = file.path
   let text
   if (kind === 'commit') text = await g('show', '--format=', '--diff-merges=first-parent', selected.value, '--', p)
+  else if (kind === 'compare') text = await g('diff', compare.value.a, compare.value.b, '--', p)
   else if (kind === 'staged') text = await g('diff', '--cached', '--', p)
   else if (file.code === 'U' || file.code === 'C') text = await g('diff', '--no-index', '--', '/dev/null', p) // conflict: whole file with markers
   else text = await g('diff', '--', p)
@@ -545,6 +558,56 @@ async function removeBranch(b) {
   run('Delete branch', () => g('branch', '-d', b), () => g('branch', b, hash))
 }
 
+// Graph filter (hide / solo branches), kept per repo in localStorage.
+const filterTick = ref(0)
+const filter = computed(() => (filterTick.value, loadFilter(repo.value)))
+function setFilter(f) {
+  saveFilter(repo.value, f)
+  filterTick.value++
+  refresh()
+}
+const hideRef = r => setFilter(toggleHidden(filter.value, r))
+const soloRef = r => setFilter(toggleSolo(filter.value, r))
+const refState = r => ({ hidden: filter.value.hidden.includes(r), solo: filter.value.solo === r })
+
+// Drag a branch onto another branch or commit -> merge / rebase menu.
+const dragRef = ref('') // branch being dragged
+const dropMenu = ref(null) // { x, y, src, dst, acts }
+const shortRef = r => (/^[0-9a-f]{40}$/.test(r) ? r.slice(0, 7) : r)
+const draggablePill = p => p.icon !== '◆' && p.name !== 'HEAD'
+// a commit row drops onto its first branch, or the commit itself
+const rowTarget = c => c.pills.find(draggablePill)?.name ?? c.hash
+function dropOn(e, dst) {
+  const src = dragRef.value
+  dragRef.value = ''
+  const acts = dropActions(src, dst, branches.value.local)
+  if (acts.length) dropMenu.value = { x: Math.min(e.clientX, innerWidth - 260), y: Math.min(e.clientY, innerHeight - 90), src, dst, acts }
+}
+async function dropDo(kind) {
+  const { src, dst } = dropMenu.value
+  dropMenu.value = null
+  if (kind === 'merge' && dst === head.value) return merge(src)
+  if (kind === 'rebase' && src === head.value) return rebaseOnto(dst)
+  // the branch that moves isn't checked out: switch to it first, so the tree must be clean
+  if (dirty.value) return (error.value = 'Commit atau stash perubahan dulu sebelum merge/rebase branch yang tidak aktif.')
+  const moved = kind === 'merge' ? dst : src
+  const [prev, old] = [await prevHead(), (await g('rev-parse', moved)).trim()]
+  run(
+    kind === 'merge' ? 'Merge' : 'Rebase',
+    async () => {
+      if (kind === 'merge') {
+        await g('switch', dst)
+        await g('merge', src)
+      } else await g('rebase', dst, src) // checks out src, then rebases it
+    },
+    async () => {
+      await g('switch', moved)
+      await g('reset', '--keep', old)
+      await goBack(prev)
+    },
+  )
+}
+
 const lastFetch = ref(0)
 const fetchAll = () =>
   run('Fetch', async () => {
@@ -667,9 +730,12 @@ const headTrack = computed(() => branches.value.track?.[head.value] ?? { ahead: 
 onMounted(() => {
   refresh()
   window.addEventListener('focus', refresh)
-  window.addEventListener('click', () => (menu.value = null))
+  window.addEventListener('click', () => (menu.value = dropMenu.value = null))
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape') menu.value = null
+    if (e.key === 'Escape') {
+      menu.value = dropMenu.value = null
+      if (compare.value) selectCommit(selected.value)
+    }
     const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)
     if (e.ctrlKey && e.key === 'f' && repo.value) {
       e.preventDefault()
@@ -728,9 +794,28 @@ onMounted(() => {
       <form class="new-branch" @submit.prevent="createBranch">
         <input v-model="newBranch" :placeholder="selected === 'WIP' ? 'Branch baru dari HEAD' : 'Branch baru dari ' + selected.slice(0, 7)" />
       </form>
+      <p v-if="filter.solo || filter.hidden.length" class="hint filter-note">
+        Graph {{ filter.solo ? 'hanya ' + filter.solo.replace(/^refs\/(heads|remotes)\//, '') : 'tanpa ' + filter.hidden.length + ' branch' }}
+        <button @click="setFilter(NO_FILTER)">Tampilkan semua</button>
+      </p>
       <h4>Local</h4>
-      <div v-for="b in branches.local" :key="b" class="branch" :class="{ current: b === head }" @dblclick="checkout(b)">
+      <div
+        v-for="b in branches.local"
+        :key="b"
+        class="branch"
+        :class="{ current: b === head, ...refState('refs/heads/' + b) }"
+        draggable="true"
+        @dragstart="dragRef = b"
+        @dragend="dragRef = ''"
+        @dragover="dragRef && $event.preventDefault()"
+        @drop="dropOn($event, b)"
+        @dblclick="checkout(b)"
+      >
         <span class="name" :title="b">{{ b }}</span>
+        <span class="actions">
+          <button title="Tampilkan hanya branch ini di graph" @click="soloRef('refs/heads/' + b)">◎</button>
+          <button title="Sembunyikan dari graph" @click="hideRef('refs/heads/' + b)">⊘</button>
+        </span>
         <span v-if="branches.track[b]?.ahead || branches.track[b]?.behind" class="track" title="ahead / behind upstream">
           <template v-if="branches.track[b].ahead">↑{{ branches.track[b].ahead }}</template>
           <template v-if="branches.track[b].behind"> ↓{{ branches.track[b].behind }}</template>
@@ -765,9 +850,20 @@ onMounted(() => {
             <button title="Hapus remote" @click="removeRemote(r)">✕</button>
           </span>
         </div>
-        <div v-for="b in branches.remote.filter(b => b.startsWith(r.name + '/'))" :key="b" class="branch nested" @dblclick="checkout(b, true)">
+        <div
+          v-for="b in branches.remote.filter(b => b.startsWith(r.name + '/'))"
+          :key="b"
+          class="branch nested"
+          :class="refState('refs/remotes/' + b)"
+          draggable="true"
+          @dragstart="dragRef = b"
+          @dragend="dragRef = ''"
+          @dblclick="checkout(b, true)"
+        >
           <span class="name" :title="b">{{ b.slice(r.name.length + 1) }}</span>
           <span class="actions">
+            <button title="Tampilkan hanya branch ini di graph" @click="soloRef('refs/remotes/' + b)">◎</button>
+            <button title="Sembunyikan dari graph" @click="hideRef('refs/remotes/' + b)">⊘</button>
             <select class="merge-pick" title="Merge ke branch aktif" :aria-label="'Merge ' + b" @change="merge(b, $event.target.value); $event.target.value = ''; $event.target.blur()">
               <option value="" hidden>⤵</option>
               <option v-for="(l, k) in MERGE_MODES" :key="k" :value="k">{{ l }}</option>
@@ -822,7 +918,7 @@ onMounted(() => {
         </div>
       </template>
       <SidebarExtras :repo="repo" :g="g" :run="run" :branches="branches.local" :tick="commits" @open="openPath" @close="closeTab" />
-      <p class="hint">Double-click branch untuk checkout · klik kanan commit untuk aksi lain</p>
+      <p class="hint">Double-click branch untuk checkout · klik kanan commit untuk aksi lain · seret branch ke branch/commit lain untuk merge atau rebase · Ctrl+klik commit kedua untuk membandingkan</p>
     </aside>
 
     <div v-if="operation" class="op-banner">
@@ -964,11 +1060,11 @@ onMounted(() => {
       <div v-else-if="diff" class="diff">
         <div class="diff-head">
           <b>{{ diff.file.path }}</b>
-          <small>{{ { commit: 'commit ' + selected.slice(0, 7), staged: 'staged', unstaged: 'unstaged' }[diff.kind] }}</small>
+          <small>{{ { commit: 'commit ' + selected.slice(0, 7), staged: 'staged', unstaged: 'unstaged', compare: compare && compare.a.slice(0, 7) + '..' + compare.b.slice(0, 7) }[diff.kind] }}</small>
           <small v-if="hunkable" class="hint-pick">klik baris +/− untuk memilih baris tertentu</small>
           <span class="spacer" />
           <button v-if="diff.file.code !== 'U'" @click="openHistory(diff.file.path)">Riwayat</button>
-          <button v-if="diff.file.code !== 'D'" @click="openBlame(diff.file.path, diff.kind === 'commit' ? selected : '')">Blame</button>
+          <button v-if="diff.file.code !== 'D'" @click="openBlame(diff.file.path, diff.kind === 'compare' ? compare.b : diff.kind === 'commit' ? selected : '')">Blame</button>
           <span class="seg">
             <button :class="{ on: diffMode === 'split' }" @click="setDiffMode('split')">Split</button>
             <button :class="{ on: diffMode === 'unified' }" @click="setDiffMode('unified')">Unified</button>
@@ -1020,11 +1116,23 @@ onMounted(() => {
             v-for="(c, k) in visible.list"
             :key="c.hash"
             class="row"
-            :class="{ sel: selected === c.hash, dim: matches && !matches.has(c.hash) }"
-            :style="{ '--c': color(c.col), top: (visible.first + k + 1) * ROW + 'px' }" @click="selectCommit(c.hash)" @contextmenu.prevent="openMenu($event, c)">
+            :class="{ sel: selected === c.hash || compare?.b === c.hash || compare?.a === c.hash, dim: matches && !matches.has(c.hash) }"
+            :style="{ '--c': color(c.col), top: (visible.first + k + 1) * ROW + 'px' }"
+            @click="$event.ctrlKey || $event.metaKey ? pickPair(c.hash) : selectCommit(c.hash)"
+            @contextmenu.prevent="openMenu($event, c)"
+            @dragover="dragRef && $event.preventDefault()"
+            @drop="dropOn($event, rowTarget(c))"
+          >
             <span class="refs" :style="{ width: REFS + 'px' }">
               <template v-if="c.pills.length">
-                <span class="pill" :class="{ head: c.pills[0].head }" :title="c.pills[0].name">
+                <span
+                  class="pill"
+                  :class="{ head: c.pills[0].head }"
+                  :title="c.pills[0].name"
+                  :draggable="draggablePill(c.pills[0])"
+                  @dragstart="dragRef = c.pills[0].name"
+                  @dragend="dragRef = ''"
+                >
                   <i>{{ c.pills[0].icon }}</i>{{ c.pills[0].name }}<i v-if="c.pills[0].synced" title="sinkron dengan remote">☁</i>
                 </span>
                 <span v-if="c.pills.length > 1" class="pill more" :title="c.pills.slice(1).map(p => p.name).join('\n')">+{{ c.pills.length - 1 }}</span>
@@ -1083,6 +1191,20 @@ onMounted(() => {
           </button>
         </div>
       </template>
+      <template v-else-if="compare">
+        <div class="section">
+          <h3>Bandingkan commit</h3>
+          <p class="meta">
+            <code>{{ compare.a.slice(0, 7) }}</code> → <code>{{ compare.b.slice(0, 7) }}</code><br />
+            Esc atau klik commit lain untuk selesai
+          </p>
+          <h4>File berubah ({{ compare.files.length }})</h4>
+          <div v-for="f in compare.files" :key="f.path" class="file" @click="showDiff(f, 'compare')">
+            <span class="code" :class="f.code">{{ f.code }}</span>
+            <span class="name" :title="f.path">{{ f.path }}</span>
+          </div>
+        </div>
+      </template>
       <template v-else-if="selectedCommit">
         <div class="section">
           <h3>{{ selectedCommit.subject }}</h3>
@@ -1123,6 +1245,10 @@ onMounted(() => {
         <hr />
         <button @click="copyHash">Salin hash</button>
       </template>
+    </div>
+    <div v-if="dropMenu" class="menu" :style="{ left: dropMenu.x + 'px', top: dropMenu.y + 'px' }" @click.stop>
+      <button v-if="dropMenu.acts.includes('merge')" @click="dropDo('merge')">Merge {{ dropMenu.src }} ke {{ dropMenu.dst }}</button>
+      <button v-if="dropMenu.acts.includes('rebase')" @click="dropDo('rebase')">Rebase {{ dropMenu.src }} ke {{ shortRef(dropMenu.dst) }}</button>
     </div>
   </div>
 
@@ -1364,6 +1490,10 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .form-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .remote-head .name { color: var(--fg); font-weight: 600; }
 .branch.nested { padding-left: 20px; }
+.branch.hidden .name { opacity: 0.4; text-decoration: line-through; }
+.branch.solo .name::after { content: ' ◎'; color: var(--accent); }
+.filter-note { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 6px 0 0; color: var(--accent); }
+.filter-note button { padding: 0 6px; font-size: 11px; }
 
 /* syntax colors for highlight.js, tuned to the swamp palette */
 .hljs-keyword, .hljs-selector-tag, .hljs-doctag { color: #eba93a; }

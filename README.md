@@ -9,7 +9,8 @@ fetch/pull/push (force push dengan --force-with-lease saat ditolak), auto-fetch 
 editor merge conflict, virtual scroll (hingga 20.000 commit), Pull Request GitHub (lihat, checkout, buat),
 halaman Pengaturan (identitas git lokal/global, profil identitas sekali klik, diff bawaan), status tanda tangan commit,
 avatar Gravatar (mati secara bawaan karena mengirim hash email author ke gravatar.com),
-pull merge/rebase/fast-forward, merge --no-ff/squash, submodule, worktree, dan Git LFS (pull, track pola).
+pull merge/rebase/fast-forward, merge --no-ff/squash, submodule, worktree, Git LFS (pull, track pola),
+bandingkan dua commit (Ctrl+klik), seret branch untuk merge/rebase, dan filter graph (sembunyikan / solo branch).
 
 ## Jalankan
 
