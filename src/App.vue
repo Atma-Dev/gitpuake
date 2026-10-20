@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open, ask } from '@tauri-apps/plugin-dialog'
 import { LOG_FORMAT, parseLog, layout } from './graph.js'
 import { parseDiff, hunkPatch, split } from './diff.js'
+import { ACTIONS, buildTodo, validate } from './rebase.js'
 import Welcome from './Welcome.vue'
 import logo from './assets/puake.svg'
 
@@ -142,7 +143,7 @@ function parseStatus(out) {
   return { staged, unstaged, conflicts }
 }
 
-const OPS = { MERGE_HEAD: 'merge', CHERRY_PICK_HEAD: 'cherry-pick', REVERT_HEAD: 'revert' }
+const OPS = { REBASE_HEAD: 'rebase', MERGE_HEAD: 'merge', CHERRY_PICK_HEAD: 'cherry-pick', REVERT_HEAD: 'revert' }
 const operation = ref('') // in-progress merge / cherry-pick / revert
 const resolve = p => run('Resolve', () => g('add', '--', p))
 const abortOp = async () => {
@@ -323,7 +324,7 @@ async function stashDo(action, s) {
 
 function openMenu(e, c) {
   selectCommit(c.hash)
-  menu.value = { x: Math.min(e.clientX, innerWidth - 240), y: Math.min(e.clientY, innerHeight - 360), hash: c.hash, input: null, value: '' }
+  menu.value = { x: Math.min(e.clientX, innerWidth - 240), y: Math.min(e.clientY, innerHeight - 440), hash: c.hash, input: null, value: '' }
 }
 // Runs a HEAD-changing action; `undoFor(prev)` builds its undo from the HEAD state before it ran.
 async function act(label, args, undoFor) {
@@ -340,6 +341,36 @@ async function resetTo(mode) {
   if (mode === 'hard' && !(await ask(`Reset --hard ke ${hash.slice(0, 7)}? Perubahan yang belum di-commit akan hilang dan tidak bisa di-undo.`, { kind: 'warning' }))) return
   act('Reset', ['reset', '--' + mode, hash], p => resetBack(p.hash, mode === 'hard' ? '--keep' : '--soft'))
 }
+const rebaseOnto = target => act('Rebase', ['rebase', '--autostash', target], p => resetBack(p.hash))
+
+const plan = ref(null) // interactive rebase: { base, items (newest first), drag }
+const planError = computed(() => plan.value && validate(plan.value.items))
+async function openRebase() {
+  const base = menu.value.hash
+  menu.value = null
+  const out = await g('log', '--format=%H%x1f%P%x1f%s', `${base}..HEAD`)
+  const rows = out.split('\n').filter(Boolean).map(l => l.split('\x1f'))
+  if (!rows.length) return (error.value = 'Tidak ada commit di atas commit ini untuk di-rebase.')
+  if (rows.some(([, parents]) => parents.includes(' ')))
+    return (error.value = 'Rentang ini berisi merge commit. Interactive rebase yang melewati merge belum didukung.')
+  diff.value = null
+  plan.value = { base, drag: -1, items: rows.map(([hash, , subject]) => ({ hash, subject, action: 'pick', msg: subject })) }
+}
+// squash/fixup fold into the nearest older commit that survives on its own
+const foldTarget = i => plan.value.items.slice(i + 1).find(x => !['drop', 'squash', 'fixup'].includes(x.action))?.hash.slice(0, 7)
+function moveItem(from, to) {
+  const items = plan.value.items
+  if (from < 0 || to < 0 || to >= items.length || from === to) return
+  items.splice(to, 0, items.splice(from, 1)[0])
+}
+async function startRebase() {
+  const { base, items } = plan.value
+  plan.value = null
+  const prev = await headHash()
+  // the "editor" just writes our todo (fed on stdin) over git's
+  run('Rebase', () => gIn(buildTodo(items), '-c', 'sequence.editor=cat >', '-c', 'core.editor=true', 'rebase', '-i', '--autostash', base), resetBack(prev))
+}
+
 const copyHash = () => {
   navigator.clipboard.writeText(menu.value.hash)
   menu.value = null
@@ -444,13 +475,17 @@ onMounted(() => {
         </span>
         <span class="actions" v-if="b !== head">
           <button title="Merge ke branch aktif" @click="merge(b)">⤵</button>
+          <button title="Rebase branch aktif ke branch ini" @click="rebaseOnto(b)">⤴</button>
           <button title="Hapus" @click="removeBranch(b)">✕</button>
         </span>
       </div>
       <h4>Remote</h4>
       <div v-for="b in branches.remote" :key="b" class="branch" @dblclick="checkout(b, true)">
         <span class="name" :title="b">{{ b }}</span>
-        <span class="actions"><button title="Merge ke branch aktif" @click="merge(b)">⤵</button></span>
+        <span class="actions">
+          <button title="Merge ke branch aktif" @click="merge(b)">⤵</button>
+          <button title="Rebase branch aktif ke branch ini" @click="rebaseOnto(b)">⤴</button>
+        </span>
       </div>
       <template v-if="stashes.length">
         <h4>Stash</h4>
@@ -467,7 +502,7 @@ onMounted(() => {
     </aside>
 
     <div v-if="operation" class="op-banner">
-      <b>{{ { merge: 'Merge', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[operation] }} sedang berlangsung.</b>
+      <b>{{ { rebase: 'Rebase', merge: 'Merge', 'cherry-pick': 'Cherry-pick', revert: 'Revert' }[operation] }} sedang berlangsung.</b>
       <span v-if="status.conflicts.length">
         {{ status.conflicts.length }} file conflict. Perbaiki di editor, lalu klik "Tandai selesai" di panel kanan.
       </span>
@@ -478,7 +513,45 @@ onMounted(() => {
     </div>
 
     <main class="main" v-if="repo">
-      <div v-if="diff" class="diff">
+      <div v-if="plan" class="rebase">
+        <div class="diff-head">
+          <b>Interactive rebase</b>
+          <small>{{ plan.items.length }} commit di atas {{ plan.base.slice(0, 7) }}, paling atas yang terbaru</small>
+          <span class="spacer" />
+          <button @click="plan = null">Batal</button>
+          <button class="primary" :disabled="!!planError || !!busy" @click="startRebase">Mulai rebase</button>
+        </div>
+        <p v-if="planError" class="plan-error">{{ planError }}</p>
+        <ol class="plan">
+          <li
+            v-for="(it, i) in plan.items"
+            :key="it.hash"
+            :class="it.action"
+            draggable="true"
+            @dragstart="plan.drag = i"
+            @dragover.prevent
+            @drop="moveItem(plan.drag, i)"
+          >
+            <span class="grip" title="Seret untuk mengubah urutan">⠿</span>
+            <select v-model="it.action" :aria-label="'Aksi untuk ' + it.subject">
+              <option v-for="a in ACTIONS" :key="a" :value="a">{{ a }}</option>
+            </select>
+            <code>{{ it.hash.slice(0, 7) }}</code>
+            <input v-if="it.action === 'reword'" v-model="it.msg" class="msg" aria-label="Judul commit baru" />
+            <span v-else class="subj">{{ it.subject }}</span>
+            <small v-if="it.action === 'squash' || it.action === 'fixup'" class="into">masuk ke {{ foldTarget(i) ?? '—' }}</small>
+            <span class="move">
+              <button :disabled="i === 0" title="Naikkan" @click="moveItem(i, i - 1)">↑</button>
+              <button :disabled="i === plan.items.length - 1" title="Turunkan" @click="moveItem(i, i + 1)">↓</button>
+            </span>
+          </li>
+        </ol>
+        <p class="plan-help">
+          <b>squash</b> menggabungkan commit ke commit di bawahnya dan menyimpan kedua pesannya. <b>fixup</b> juga menggabung,
+          tapi pesannya dibuang. <b>reword</b> hanya mengganti judul commit. Hasil rebase bisa di-undo.
+        </p>
+      </div>
+      <div v-else-if="diff" class="diff">
         <div class="diff-head">
           <b>{{ diff.file.path }}</b>
           <small>{{ { commit: 'commit ' + selected.slice(0, 7), staged: 'staged', unstaged: 'unstaged' }[diff.kind] }}</small>
@@ -634,6 +707,9 @@ onMounted(() => {
         <button @click="act('Cherry-pick', ['cherry-pick', menu.hash], p => resetBack(p.hash))">Cherry-pick ke {{ head || 'HEAD' }}</button>
         <button @click="act('Revert', ['revert', '--no-edit', menu.hash], p => resetBack(p.hash))">Revert commit</button>
         <hr />
+        <button @click="rebaseOnto(menu.hash)">Rebase {{ head || 'HEAD' }} ke sini</button>
+        <button @click="openRebase">Interactive rebase dari sini…</button>
+        <hr />
         <button @click="resetTo('soft')">Reset {{ head || 'HEAD' }} ke sini · soft</button>
         <button @click="resetTo('mixed')">Reset {{ head || 'HEAD' }} ke sini · mixed</button>
         <button class="danger" @click="resetTo('hard')">Reset {{ head || 'HEAD' }} ke sini · hard</button>
@@ -723,6 +799,43 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .track { color: var(--accent); font-size: 11px; white-space: nowrap; }
 .row.dim { opacity: 0.3; }
 .conflicts { flex: none; }
+
+.plan-error { margin: 10px; padding: 8px 10px; border-radius: 4px; background: #4a1f1f; color: #f9b1aa; }
+.plan { list-style: none; margin: 10px; padding: 0; border: 1px solid var(--line); border-radius: 6px; }
+.plan li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.plan li:last-child { border-bottom: 0; }
+.plan select {
+  width: 84px;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 3px 20px 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23849282' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 7px center;
+}
+.plan .into { color: #36d6c3; white-space: nowrap; }
+.plan code { color: var(--dim); }
+.plan .subj { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan .msg { flex: 1; }
+.plan .grip { cursor: grab; color: var(--dim); }
+.plan .move { display: flex; gap: 2px; }
+.plan .move button { padding: 0 6px; }
+.plan li.reword select { border-color: var(--accent); color: var(--accent); }
+.plan li.squash, .plan li.fixup { padding-left: 34px; background: var(--bg2); }
+.plan li.squash select, .plan li.fixup select { border-color: #36d6c3; color: #36d6c3; }
+.plan li.drop .subj { text-decoration: line-through; opacity: 0.45; }
+.plan li.drop select { border-color: #f2665b; color: #f2665b; }
+.plan-help { margin: 0 10px; max-width: 72ch; color: var(--dim); line-height: 1.5; }
+.plan-help b { color: var(--fg); font-weight: 600; }
 .code.C { color: #f2665b; }
 .toolbar {
   grid-column: 1 / -1;
