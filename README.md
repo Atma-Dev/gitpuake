@@ -26,6 +26,7 @@ npm install
 npm run tauri dev      # development
 npm run tauri build    # bundle rilis
 for t in src/*.test.js; do node "$t"; done # self-check
+npx playwright install webkit && npm run test:e2e # alur utama di WebKit, dengan git sungguhan di repo sementara
 (cd src-tauri && cargo test --lib)         # cek keamanan path file
 ```
 

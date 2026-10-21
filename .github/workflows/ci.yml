@@ -32,6 +32,10 @@ jobs:
       - run: npx vite build
       - name: JS self-checks
         run: for t in src/*.test.js; do echo "== $t"; node "$t"; done
+      - name: e2e
+        run: |
+          npx playwright install --with-deps webkit
+          npm run test:e2e
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --lib
