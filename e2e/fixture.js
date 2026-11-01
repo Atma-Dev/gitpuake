@@ -33,6 +33,7 @@ function exec(program, repo, args, input) {
     child.stderr.on('data', d => (err += d))
     child.on('error', e => reject(new Error(`${program}: ${e.message}`)))
     child.on('close', code => (code !== 0 && err.trim() ? reject(new Error(err.trim())) : resolve(out)))
+    child.stdin.on('error', () => {}) // git may exit before we write: EPIPE on Linux
     child.stdin.end(input ?? '')
   })
 }
