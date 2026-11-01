@@ -1,5 +1,6 @@
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import CommitMenu from './CommitMenu.vue'
 import DiffPane from './DiffPane.vue'
 import FileView from './FileView.vue'
@@ -15,12 +16,15 @@ import Sidebar from './Sidebar.vue'
 import Terminal from './Terminal.vue'
 import TopBar from './TopBar.vue'
 import Welcome from './Welcome.vue'
-import { abortOp, bisect, bisecting, busy, commands, commits, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, showReflog, showSettings, showTerminal, status, undo } from './store.js'
+import { abortOp, bisect, bisecting, busy, commands, commits, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, reviewReqs, showReflog, showSettings, showTerminal, status, undo } from './store.js'
+
+const showReviews = ref(false) // closed by the global click handler
+const openUrl = url => invoke('open_url', { url }).catch(e => (error.value = String(e)))
 
 onMounted(() => {
   refresh()
   window.addEventListener('focus', refresh)
-  window.addEventListener('click', () => (menu.value = dropMenu.value = null))
+  window.addEventListener('click', () => (menu.value = dropMenu.value = showReviews.value = null))
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       menu.value = dropMenu.value = null
@@ -96,7 +100,13 @@ onMounted(() => {
     <Panel v-if="repo" />
 
     <CommitMenu />
-    <footer class="statusbar"><span>{{ repo }}</span><span class="spacer" /><span>{{ commits.length }} commit</span><span v-if="busy">{{ busy }}…</span></footer>
+    <ul v-if="showReviews && reviewReqs.length" class="review-list" @click.stop>
+      <li v-for="r in reviewReqs" :key="r.url">
+        <button @click="openUrl(r.url)"><code>{{ r.repository.nameWithOwner }}#{{ r.number }}</code> {{ r.title }}</button>
+      </li>
+    </ul>
+    <footer class="statusbar"><span>{{ repo }}</span><button v-if="reviewReqs.length" class="review-btn" @click.stop="showReviews = !showReviews">👁 {{ reviewReqs.length }} PR perlu review kamu</button>
+      <span class="spacer" /><span>{{ commits.length }} commit</span><span v-if="busy">{{ busy }}…</span></footer>
   </div>
 
   <Palette v-if="showPalette && repo" :commands="commands" @close="showPalette = false" />

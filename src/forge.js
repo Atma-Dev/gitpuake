@@ -28,3 +28,9 @@ export function cliError(e, cli) {
     : /auth login|not logged|401|unauthori[sz]ed|no token/i.test(msg) ? 'auth'
     : msg
 }
+
+// "email<TAB>url" lines -> { email: url }
+export const parseAvatarRows = out =>
+  Object.fromEntries(
+    out.split('\n').map(l => l.split('\t')).filter(([e, u]) => e && u).map(([e, u]) => [e.trim().toLowerCase(), u.trim() + (u.includes('?') ? '&' : '?') + 's=64']),
+  )

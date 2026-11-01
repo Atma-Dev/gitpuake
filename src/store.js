@@ -2,7 +2,6 @@
 import { LOG_FORMAT, layout, parseLog } from './graph.js'
 import { MODES as PULL_MODES } from './PullButton.vue'
 import { ask, message, open } from '@tauri-apps/plugin-dialog'
-import { buildTodo, validate } from './rebase.js'
 import { compose, parseConflicts } from './merge.js'
 import { computed, nextTick, ref, watch } from 'vue'
 import { dropActions, loadFilter, logRefs, saveFilter, toggleHidden, toggleSolo } from './branchops.js'
@@ -11,9 +10,12 @@ import { hunkPatch, linesPatch, parseDiff } from './diff.js'
 import { invoke } from '@tauri-apps/api/core'
 import { markWords } from './words.js'
 import { parseBlame } from './blame.js'
-import { parseRemote } from './forge.js'
+import { parseAvatarRows, parseRemote } from './forge.js'
+import { forgeAvatars } from './avatars.js'
 import { parseSig, readIdentity } from './identity.js'
 import { settings } from './settings.js'
+import { bisect, bisecting } from './flow.js'
+import { plan } from './rebaseplan.js'
 
 export const ROW = 34
 export const LANE = 22
@@ -184,56 +186,6 @@ export const continueOp = () =>
   run('Continue', () =>
     operation.value === 'merge' ? g('commit', '--no-edit') : g('-c', 'core.editor=true', operation.value, '--continue'),
   )
-
-// Bisect: the banner marks HEAD; the commit menu starts a session and marks any commit.
-export const bisecting = ref(false)
-export const bisect = (...args) =>
-  run('Bisect', async () => {
-    const out = (await g('bisect', ...args)).trim()
-    if (out) info.value = out.split('\n').slice(0, 6).join('\n')
-  })
-export const bisectStart = hash => {
-  menu.value = null
-  run('Bisect', async () => {
-    await g('bisect', 'start')
-    await g('bisect', 'bad', hash)
-    info.value = 'Bisect dimulai. Klik kanan commit lama yang masih bagus, lalu pilih "Bisect: commit ini good".'
-  })
-}
-export const bisectMark = (kind, hash) => {
-  menu.value = null
-  bisect(kind, hash)
-}
-
-// Gitflow: feature/ release/ hotfix/ branches, merged --no-ff on finish.
-// ponytail: finish has no undo (multi-step) and stops on a merge conflict; resolve it, then finish again.
-export const FLOW = ['feature', 'release', 'hotfix']
-export const flowKind = computed(() => FLOW.find(k => head.value?.startsWith(k + '/')))
-const trunk = () => (branches.value.local.includes('main') ? 'main' : 'master')
-export async function flowStart(kind, name) {
-  name = name.trim().replace(/\s+/g, '-')
-  if (!name) return
-  if (!branches.value.local.includes('develop')) {
-    if (!(await ask(`Branch develop belum ada. Buat dari ${trunk()}?`, { kind: 'info' }))) return
-    await run('Gitflow', () => g('branch', 'develop', trunk()))
-  }
-  newBranchAt(`${kind}/${name}`, [kind === 'hotfix' ? trunk() : 'develop'])
-}
-export async function flowFinish() {
-  const kind = flowKind.value
-  const br = head.value
-  if (dirty.value) return (error.value = 'Commit atau stash perubahanmu dulu sebelum menyelesaikan ' + br + '.')
-  const targets = kind === 'feature' ? ['develop'] : [trunk(), 'develop']
-  if (!(await ask(`Selesaikan ${br}? Branch ini di-merge --no-ff ke ${targets.join(' lalu ')}, lalu dihapus.`, { kind: 'warning' }))) return
-  run('Gitflow finish', async () => {
-    for (const t of targets) {
-      await g('switch', t)
-      await g('merge', '--no-ff', '--no-edit', br)
-      if (kind !== 'feature' && t === trunk()) await g('tag', '-a', br.slice(kind.length + 1), '-m', br)
-    }
-    await g('branch', '-d', br)
-  })
-}
 
 export const query = ref('')
 export const searchEl = ref(null)
@@ -595,7 +547,7 @@ export function toggleMulti(hash) {
   const base = multi.value.length || selected.value === 'WIP' ? multi.value : [selected.value]
   multi.value = base.includes(hash) ? base.filter(h => h !== hash) : [...base, hash]
 }
-const picked = () => commits.value.filter(c => multi.value.includes(c.hash)).map(c => c.hash) // newest first
+export const picked = () => commits.value.filter(c => multi.value.includes(c.hash)).map(c => c.hash) // newest first
 export function openMenu(e, c) {
   if (!multi.value.includes(c.hash)) {
     multi.value = []
@@ -622,53 +574,8 @@ export const rebaseOnto = target => act('Rebase', ['rebase', '--autostash', targ
 
 export const showReflog = ref(false)
 export const showTerminal = ref(false)
-export const plan = ref(null) // interactive rebase: { base, items (newest first), drag }
-export const planError = computed(() => plan.value && validate(plan.value.items))
-export async function openRebase() {
-  const base = menu.value.hash
-  menu.value = null
-  await openPlan(base, () => 'pick')
-}
-async function openPlan(base, actionOf, need = []) {
-  const out = await g('log', '--format=%H%x1f%P%x1f%s', `${base}..HEAD`)
-  const rows = out.split('\n').filter(Boolean).map(l => l.split('\x1f'))
-  if (!rows.length) return (error.value = 'Tidak ada commit di atas commit ini untuk di-rebase.')
-  if (need.some(h => !rows.some(([r]) => r === h))) return (error.value = 'Commit yang dipilih harus ada di branch aktif.')
-  if (rows.some(([, parents]) => parents.includes(' ')))
-    return (error.value = 'Rentang ini berisi merge commit. Interactive rebase yang melewati merge belum didukung.')
-  diff.value = null
-  plan.value = { base, drag: -1, items: rows.map(([hash, , subject]) => ({ hash, subject, action: actionOf(hash), msg: subject })) }
-}
-// Opens the rebase plan from the parent of the oldest picked commit, preset for reword / squash / drop.
-export async function planFor(kind) {
-  const hashes = multi.value.length > 1 ? picked() : [menu.value.hash]
-  menu.value = null
-  const oldest = hashes.at(-1)
-  const base = (await g('rev-parse', '-q', '--verify', oldest + '^').catch(() => '')).trim()
-  if (!base) return (error.value = 'Commit pertama (root) tidak bisa diubah lewat rebase.')
-  const action = h => (!hashes.includes(h) ? 'pick' : kind === 'squash' ? (h === oldest ? 'pick' : 'squash') : kind)
-  await openPlan(base, action, hashes)
-}
-export function cherryPickMany() {
-  const hashes = picked().reverse() // oldest first
-  multi.value = []
-  act('Cherry-pick', ['cherry-pick', ...hashes], p => resetBack(p.hash))
-}
-// squash/fixup fold into the nearest older commit that survives on its own
-export const foldTarget = i => plan.value.items.slice(i + 1).find(x => !['drop', 'squash', 'fixup'].includes(x.action))?.hash.slice(0, 7)
-export function moveItem(from, to) {
-  const items = plan.value.items
-  if (from < 0 || to < 0 || to >= items.length || from === to) return
-  items.splice(to, 0, items.splice(from, 1)[0])
-}
-export async function startRebase() {
-  const { base, items } = plan.value
-  plan.value = null
-  const prev = await headHash()
-  // the "editor" just writes our todo (fed on stdin) over git's
-  run('Rebase', () => gIn(buildTodo(items), '-c', 'sequence.editor=cat >', '-c', 'core.editor=true', 'rebase', '-i', '--autostash', base), resetBack(prev))
-}
-
+export * from './flow.js'
+export * from './rebaseplan.js'
 export const copyHash = () => {
   navigator.clipboard.writeText(menu.value.hash)
   menu.value = null
@@ -783,6 +690,7 @@ export async function autoFetch() {
     lastFetch.value = Date.now()
     await refresh()
     forgeEl.value?.load()
+    loadForgeExtras()
   } catch {}
 }
 
@@ -807,6 +715,19 @@ export const pull = flags => act('Pull', ['pull', ...flags], p => resetBack(p.ha
 // Pull/merge requests and issues: sidebar in Forge.vue, GitHub PR detail in PRView.vue.
 export const forge = computed(() => parseRemote(remotes.value.find(r => r.name === firstRemote())?.url))
 export const forgeEl = ref(null)
+// GitHub extras through gh: avatars of recent committers, and open PRs waiting for the user's review.
+export const reviewReqs = ref([])
+export async function loadForgeExtras() {
+  const at = repo.value
+  if (!at || forge.value?.forge !== 'github') return (reviewReqs.value = [])
+  const gh = args => invoke('gh', { repo: at, args })
+  const rows = await Promise.all([1, 2].map(n => gh(['api', `repos/{owner}/{repo}/commits?per_page=100&page=${n}`, '--jq', '.[] | select(.author) | [.commit.author.email, .author.avatar_url] | @tsv']).catch(() => '')))
+  const reviews = await gh(['search', 'prs', '--review-requested=@me', '--state=open', '--limit', '20', '--json', 'number,title,repository,url']).then(JSON.parse, () => [])
+  if (at !== repo.value) return
+  Object.assign(forgeAvatars, parseAvatarRows(rows.join('\n')))
+  reviewReqs.value = reviews
+}
+watch([repo, () => forge.value?.forge], loadForgeExtras, { immediate: true })
 export const prView = ref(null) // number of the PR shown in the main area
 export const openPR = n => {
   diff.value = fileView.value = null

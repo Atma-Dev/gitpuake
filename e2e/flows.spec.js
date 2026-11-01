@@ -192,3 +192,11 @@ test('theme switches to light from the palette', async ({ app }) => {
   await page.keyboard.press('Enter')
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
 })
+
+test('github remote: committer photo on the graph node and PRs waiting for review', async ({ app, repo }) => {
+  git(repo, 'remote', 'add', 'origin', 'git@github.com:o/r.git')
+  const page = await app()
+  await expect(page.locator('svg.graph image').first()).toHaveAttribute('href', /avatars\.example\.invalid\/u\/1\?s=64/)
+  await page.getByRole('button', { name: /1 PR perlu review/ }).click()
+  await expect(page.locator('.review-list')).toContainText('o/r#7 Please review me')
+})

@@ -45,6 +45,10 @@ async function backend(cmd, a) {
     case 'shell':
       return exec('sh', a.repo, ['-c', a.line]).catch(e => String(e.message))
     case 'gh':
+      // canned answers for the two calls the app makes on a GitHub remote; the rest behaves as "not installed"
+      if (a.args[0] === 'api') return 'test@example.invalid\thttps://avatars.example.invalid/u/1\n'
+      if (a.args[0] === 'search') return JSON.stringify([{ number: 7, title: 'Please review me', url: 'https://github.com/o/r/pull/7', repository: { nameWithOwner: 'o/r' } }])
+    // fallthrough
     case 'glab':
       throw new Error(`${cmd}: No such file or directory (os error 2)`) // not installed
     case 'read_file':

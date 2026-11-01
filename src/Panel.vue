@@ -2,7 +2,7 @@
 // Right panel: working tree and commit box, a compare, or commit details.
 import { amend, busy, commit, commitFiles, commits, compare, discard, discardAll, identity, msg, openMerge, path, resolve, selected, selectedCommit, showDiff, showSettings, sig, stage, stageAll, stashFile, status, unstage, unstageAll } from './store.js'
 import FileTree from './FileTree.vue'
-import { avatar } from './identity.js'
+import { photo } from './avatars.js'
 import { settings } from './settings.js'
 </script>
 
@@ -82,7 +82,7 @@ import { settings } from './settings.js'
         <p class="meta">
           <code>{{ selectedCommit.hash.slice(0, 10) }}</code>
           <span v-if="sig" class="sig" :class="sig.tone" :title="sig.signer ? 'Ditandatangani oleh ' + sig.signer : ''">{{ sig.code === 'G' ? '✓ ' : '' }}{{ sig.label }}</span><br />
-          <img v-if="settings.avatars && avatar(selectedCommit.email)" :src="avatar(selectedCommit.email)" class="avatar" alt="" loading="lazy" />
+          <img v-if="photo(selectedCommit.email)" :src="photo(selectedCommit.email)" class="avatar" alt="" loading="lazy" />
           <span :title="selectedCommit.email">{{ selectedCommit.author }}</span> · {{ new Date(selectedCommit.time * 1000).toLocaleString() }}
         </p>
         <h4>File ({{ commitFiles.length }})</h4>

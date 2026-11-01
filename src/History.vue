@@ -1,8 +1,7 @@
 <script setup>
 // Commit graph with virtual scrolling (rows are positioned absolutely).
 import { REFS, multi, toggleMulti, ROW, ago, avatarColor, color, commits, compare, dirty, dragRef, draggablePill, dropOn, g, graphWidth, head, headCol, headRow, initials, matches, openMenu, path, pickPair, pills, rowTarget, selectCommit, selected, status, visible, x } from './store.js'
-import { avatar } from './identity.js'
-import { settings } from './settings.js'
+import { photo } from './avatars.js'
 </script>
 
 <template>
@@ -24,8 +23,13 @@ import { settings } from './settings.js'
           <line v-if="c.pills.length" x1="0" :x2="x(c.col)" :y1="(visible.first + k + 1.5) * ROW" :y2="(visible.first + k + 1.5) * ROW" :stroke="color(c.col)" stroke-width="2" opacity="0.6" />
           <circle v-if="c.parents.length > 1" :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="5" :fill="color(c.col)" stroke="var(--bg)" stroke-width="2" />
           <g v-else>
-            <circle :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="11" :fill="avatarColor(c.author)" :stroke="selected === c.hash ? '#fff' : color(c.col)" stroke-width="2.5" />
-            <text :x="x(c.col)" :y="(visible.first + k + 1.5) * ROW" dy=".35em" text-anchor="middle" class="ini">{{ initials(c.author) }}</text>
+            <circle :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="11" :fill="avatarColor(c.author)" />
+            <template v-if="photo(c.email)">
+              <clipPath :id="'cp' + c.hash.slice(0, 10)"><circle :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="11" /></clipPath>
+              <image :href="photo(c.email)" :x="x(c.col) - 11" :y="(visible.first + k + 1.5) * ROW - 11" width="22" height="22" :clip-path="`url(#cp${c.hash.slice(0, 10)})`" />
+            </template>
+            <text v-else :x="x(c.col)" :y="(visible.first + k + 1.5) * ROW" dy=".35em" text-anchor="middle" class="ini">{{ initials(c.author) }}</text>
+            <circle :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="11" fill="none" :stroke="selected === c.hash ? '#fff' : color(c.col)" stroke-width="2.5" />
           </g>
         </template>
         <circle v-if="dirty" :cx="x(headCol)" :cy="ROW / 2" r="9" fill="var(--bg)" stroke="#8a90a0" stroke-width="2" stroke-dasharray="3 3" />
@@ -63,7 +67,7 @@ import { settings } from './settings.js'
         </span>
         <span :style="{ width: x(graphWidth) + 'px' }" class="gutter" />
         <span class="subject">{{ c.subject }}<small v-if="c.body" class="body">{{ c.body }}</small></span>
-        <span class="author"><img v-if="settings.avatars && avatar(c.email)" :src="avatar(c.email)" class="avatar" alt="" loading="lazy" />{{ c.author }}</span>
+        <span class="author"><img v-if="photo(c.email)" :src="photo(c.email)" class="avatar" alt="" loading="lazy" />{{ c.author }}</span>
         <span class="date" :title="new Date(c.time * 1000).toLocaleString()">{{ ago(c.time) !== (commits[visible.first + k - 1] && ago(commits[visible.first + k - 1].time)) ? ago(c.time) : '' }}</span>
       </div>
     </div>
