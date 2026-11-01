@@ -180,8 +180,9 @@ test('gitflow: start a feature and finish it', async ({ app, repo }) => {
   commitFile(repo, 'login.txt')
   await page.reload()
   await page.getByRole('button', { name: 'Finish feature/login' }).click()
-  await expect.poll(() => git(repo, 'branch', '--show-current').trim()).toBe('develop')
-  expect(git(repo, 'branch', '--list', 'feature/*').trim()).toBe('')
+  // finish switches, merges, then deletes the branch; wait for the last step
+  await expect.poll(() => git(repo, 'branch', '--list', 'feature/*').trim()).toBe('')
+  expect(git(repo, 'branch', '--show-current').trim()).toBe('develop')
   expect(git(repo, 'log', '-1', '--format=%P', 'develop').trim().split(' ')).toHaveLength(2) // --no-ff merge commit
 })
 
