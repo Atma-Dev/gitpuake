@@ -1,6 +1,6 @@
 <script setup>
 // Right panel: working tree and commit box, a compare, or commit details.
-import { amend, busy, commit, commitFiles, commits, compare, discard, discardAll, identity, msg, openMerge, path, resolve, selected, selectedCommit, showDiff, showSettings, sig, stage, stageAll, stashFile, status, unstage, unstageAll } from './store.js'
+import { amend, busy, commit, commitFiles, commits, compare, discard, discardAll, identity, msg, openMerge, path, resolve, selected, selectedCommit, showDiff, showSettings, sig, stashSel, stage, stageAll, stashFile, status, unstage, unstageAll } from './store.js'
 import FileTree from './FileTree.vue'
 import { photo } from './avatars.js'
 import { settings } from './settings.js'
@@ -8,7 +8,20 @@ import { settings } from './settings.js'
 
 <template>
   <aside class="panel">
-    <template v-if="selected === 'WIP'">
+    <template v-if="stashSel">
+      <div class="section">
+        <h3>{{ stashSel.subject }}</h3>
+        <p class="meta"><code>{{ stashSel.ref }}</code><br />Klik commit lain untuk kembali</p>
+        <h4>File ({{ stashSel.files.length }})</h4>
+        <FileTree v-slot="{ f, label }" :files="stashSel.files">
+          <div class="file" @click="showDiff(f, 'stash')">
+            <span class="code" :class="f.code">{{ f.code }}</span>
+            <span class="name" :title="f.path">{{ label }}</span>
+          </div>
+        </FileTree>
+      </div>
+    </template>
+    <template v-else-if="selected === 'WIP'">
       <div v-if="status.conflicts.length" class="section conflicts">
         <h4>Conflict ({{ status.conflicts.length }})</h4>
         <FileTree v-slot="{ f, label }" :files="status.conflicts">

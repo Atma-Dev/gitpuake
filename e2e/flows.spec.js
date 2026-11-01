@@ -203,3 +203,35 @@ test('github remote: committer photo on the graph node and PRs waiting for revie
   await page.getByRole('button', { name: /1 PR perlu review/ }).click()
   await expect(page.locator('.review-list')).toContainText('o/r#7 Please review me')
 })
+
+test('rename a branch from its context menu, and undo', async ({ app, repo }) => {
+  git(repo, 'branch', 'feature')
+  const page = await app()
+  await page.locator('.branch', { hasText: 'feature' }).click({ button: 'right' })
+  await page.getByRole('button', { name: 'Ganti nama…' }).click()
+  await page.getByPlaceholder('Nama baru').fill('renamed')
+  await page.keyboard.press('Enter')
+  await expect.poll(() => git(repo, 'branch', '--list', 'renamed').trim()).toBe('renamed')
+  await page.getByRole('button', { name: /Undo/ }).click()
+  await expect.poll(() => git(repo, 'branch', '--list', 'feature').trim()).toBe('feature')
+})
+
+test('open a stash to see its files and diff', async ({ app, repo }) => {
+  write(repo, 'a.txt', 'stashed change\n')
+  git(repo, 'stash', 'push', '-q', '-m', 'wip thing')
+  const page = await app()
+  await page.locator('summary', { hasText: 'Stash' }).click() // sections start collapsed
+  await page.locator('.branch', { hasText: 'wip thing' }).click()
+  await page.locator('.panel .file', { hasText: 'a.txt' }).click()
+  await expect(page.locator('.diff-head')).toContainText('a.txt')
+  await expect(page.locator('.hunk')).toContainText('stashed change')
+})
+
+test('graph columns can be hidden from the palette', async ({ app }) => {
+  const page = await app()
+  await expect(page.locator('.cols .author')).toBeVisible()
+  await page.keyboard.press('Control+P')
+  await page.getByPlaceholder(/perintah/i).fill('kolom author')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.cols .author')).toHaveCount(0)
+})

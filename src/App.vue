@@ -16,7 +16,7 @@ import Sidebar from './Sidebar.vue'
 import Terminal from './Terminal.vue'
 import TopBar from './TopBar.vue'
 import Welcome from './Welcome.vue'
-import { abortOp, bisect, bisecting, busy, commands, commits, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, reviewReqs, showReflog, showSettings, showTerminal, status, undo } from './store.js'
+import { abortOp, branchMenu, bisect, bisecting, busy, commands, commits, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, reviewReqs, showReflog, showSettings, showTerminal, status, undo } from './store.js'
 
 const showReviews = ref(false) // closed by the global click handler
 const openUrl = url => invoke('open_url', { url }).catch(e => (error.value = String(e)))
@@ -24,10 +24,10 @@ const openUrl = url => invoke('open_url', { url }).catch(e => (error.value = Str
 onMounted(() => {
   refresh()
   window.addEventListener('focus', refresh)
-  window.addEventListener('click', () => (menu.value = dropMenu.value = showReviews.value = null))
+  window.addEventListener('click', () => (menu.value = dropMenu.value = branchMenu.value = showReviews.value = null))
   window.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
-      menu.value = dropMenu.value = null
+      menu.value = dropMenu.value = branchMenu.value = null
       if (compare.value) selectCommit(selected.value)
     }
     const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)

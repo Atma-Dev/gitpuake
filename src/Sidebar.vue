@@ -1,7 +1,7 @@
 <script setup>
 // Branches, remotes, tags, stashes, forge and repo extras.
 import Forge from './Forge.vue'
-import { MERGE_MODES, addRemote, branches, checkout, closeTab, commit, commits, createBranch, deleteTag, dragRef, dropOn, error, fetchRemote, filter, firstRemote, forge, forgeEl, g, goBack, head, hideRef, info, jumpTo, merge, newBranch, newBranchAt, openPR, openPath, prevHead, pull, push, pushTag, rebaseOnto, refState, remoteForm, remotes, removeBranch, removeRemote, removeRemoteBranch, repo, run, selected, setFilter, soloRef, stashDo, stashes, tags, vFocus } from './store.js'
+import { MERGE_MODES, addRemote, branches, checkout, closeTab, commit, commits, createBranch, deleteTag, dragRef, dropOn, error, fetchRemote, filter, firstRemote, forge, forgeEl, g, goBack, head, hideRef, info, jumpTo, merge, openBranchMenu, openStash, newBranch, newBranchAt, openPR, openPath, prevHead, pull, push, pushTag, rebaseOnto, refState, remoteForm, remotes, removeBranch, removeRemote, removeRemoteBranch, stashSel, repo, run, selected, setFilter, soloRef, stashDo, stashes, tags, vFocus } from './store.js'
 import { NO_FILTER } from './branchops.js'
 import SidebarExtras from './SidebarExtras.vue'
 import { reactive, ref } from 'vue'
@@ -38,6 +38,7 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
       v-for="b in branches.local.filter(hit)"
       :key="b"
       class="branch"
+      @contextmenu.prevent="openBranchMenu($event, b)"
       :class="{ current: b === head, ...refState('refs/heads/' + b) }"
       draggable="true"
       @dragstart="dragRef = b"
@@ -91,6 +92,7 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
         v-for="b in branches.remote.filter(b => b.startsWith(r.name + '/') && hit(b))"
         :key="b"
         class="branch nested"
+        @contextmenu.prevent="openBranchMenu($event, b, true)"
         :class="refState('refs/remotes/' + b)"
         draggable="true"
         @dragstart="dragRef = b"
@@ -123,12 +125,12 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
     </details>
     <details v-if="stashes.length" :open="open.stash" @toggle="toggle('stash', $event)">
       <summary><h4><i>⊟</i>Stash <b>{{ stashes.length }}</b></h4></summary>
-      <div v-for="s in stashes" :key="s.ref" class="branch">
+      <div v-for="s in stashes" :key="s.ref" class="branch" :class="{ current: stashSel?.ref === s.ref }" title="Klik untuk melihat isi stash" @click="openStash(s)">
         <span class="name" :title="s.ref + ': ' + s.subject">{{ s.subject }}</span>
         <span class="actions">
-          <button title="Apply" @click="stashDo('apply', s)">↧</button>
-          <button title="Pop" @click="stashDo('pop', s)">⊟</button>
-          <button title="Hapus" @click="stashDo('drop', s)">✕</button>
+          <button title="Apply" @click.stop="stashDo('apply', s)">↧</button>
+          <button title="Pop" @click.stop="stashDo('pop', s)">⊟</button>
+          <button title="Hapus" @click.stop="stashDo('drop', s)">✕</button>
         </span>
       </div>
     </details>

@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { ask } from '@tauri-apps/plugin-dialog'
-import { settings } from './settings.js'
+import { settings, stepZoom } from './settings.js'
 import { readIdentity, writeIdentity } from './identity.js'
 
 // `run` is App's run(label, fn, undo): busy state, error toast, undo, refresh.
@@ -96,6 +96,21 @@ async function removeProfile(i) {
         <span class="seg">
           <button :class="{ on: settings.diffMode === 'split' }" @click="settings.diffMode = 'split'">Split</button>
           <button :class="{ on: settings.diffMode === 'unified' }" @click="settings.diffMode = 'unified'">Unified</button>
+        </span>
+      </div>
+      <div class="row-set">
+        Zoom tampilan
+        <span class="seg">
+          <button aria-label="Perkecil" @click="stepZoom(-1)">−</button>
+          <button @click="settings.zoom = 100">{{ settings.zoom }}%</button>
+          <button aria-label="Perbesar" @click="stepZoom(1)">+</button>
+        </span>
+      </div>
+      <div class="row-set">
+        Kolom graph
+        <span>
+          <label class="amend"><input v-model="settings.showAuthor" type="checkbox" /> Author</label>
+          <label class="amend"><input v-model="settings.showDate" type="checkbox" /> Waktu</label>
         </span>
       </div>
       <div class="row-set">

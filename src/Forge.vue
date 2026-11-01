@@ -1,7 +1,7 @@
 <script setup>
 // Sidebar section for the repo's forge: pull/merge requests and issues through the user's
 // `gh` (GitHub) or `glab` (GitLab) CLI; Bitbucket has no CLI, so it only gets browser links.
-import { ref, computed, watch } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { issueBranch, cliError } from './forge.js'
 
@@ -25,6 +25,11 @@ const cli = (...args) => invoke(cliName.value, { repo: props.repo, args })
 const openUrl = url => invoke('open_url', { url }).catch(e => emit('error', String(e)))
 const bitbucket = computed(() => 'https://bitbucket.org/' + props.forge.path + '/pull-requests/')
 
+const open = reactive({ pr: true, issue: false, ...JSON.parse(localStorage.getItem('forgeOpen') || '{}') })
+const toggle = (k, e) => {
+  open[k] = e.target.open
+  localStorage.setItem('forgeOpen', JSON.stringify(open))
+}
 const prs = ref(null) // null | { list } | { error: 'missing' | 'auth' | message }
 const issues = ref(null)
 const form = ref(null) // { type: 'pr' | 'issue', title, body, base, draft } while the dialog is open
@@ -109,7 +114,8 @@ defineExpose({ load, openPRForm })
     <div v-if="head" class="branch" title="Push branch ini lalu buka halaman PR baru" @click="openPRForm"><span class="name">⇪ Buat PR di browser</span></div>
   </template>
   <template v-else-if="cliName">
-    <h4>{{ PR }} <button title="Muat ulang" @click="load">⟳</button></h4>
+    <details :open="open.pr" @toggle="toggle('pr', $event)">
+    <summary><h4><i>⇄</i>{{ PR }} <b v-if="prs?.list">{{ prs.list.length }}</b><button title="Muat ulang" @click.stop.prevent="load">⟳</button></h4></summary>
     <p v-if="!prs" class="hint">Memuat…</p>
     <p v-else-if="prs.error === 'missing'" class="hint">
       <template v-if="lab">Pasang GitLab CLI (<code>glab</code>)</template><template v-else>Pasang GitHub CLI (<code>gh</code>)</template>,
@@ -139,9 +145,11 @@ defineExpose({ load, openPRForm })
         <button title="Buka di browser" @click.stop="openUrl(pr.url)">↗</button>
       </span>
     </div>
+    </details>
 
     <template v-if="issues?.list || (issues?.error && !['missing', 'auth'].includes(issues.error))">
-      <h4>Issue <button title="Buat issue" @click="openIssueForm">+ Buat</button></h4>
+      <details :open="open.issue" @toggle="toggle('issue', $event)">
+      <summary><h4><i>◎</i>Issue <b v-if="issues?.list">{{ issues.list.length }}</b><button title="Buat issue" @click.stop.prevent="openIssueForm">+ Buat</button></h4></summary>
       <p v-if="issues.error" class="hint" :title="issues.error">Gagal memuat issue: {{ issues.error.split('\n')[0] }}</p>
       <p v-else-if="!issues.list.length" class="hint">Tidak ada issue terbuka.</p>
       <div v-for="i in issues.list ?? []" :key="i.number" class="branch pr" :title="i.title" @click="openUrl(i.url)">
@@ -154,6 +162,7 @@ defineExpose({ load, openPRForm })
           <button title="Buka di browser" @click.stop="openUrl(i.url)">↗</button>
         </span>
       </div>
+      </details>
     </template>
   </template>
 

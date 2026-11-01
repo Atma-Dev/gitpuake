@@ -2,6 +2,7 @@
 // Commit graph with virtual scrolling (rows are positioned absolutely).
 import { REFS, multi, toggleMulti, ROW, ago, avatarColor, color, commits, compare, dirty, dragRef, draggablePill, dropOn, g, graphWidth, head, headCol, headRow, initials, matches, openMenu, path, pickPair, pills, rowTarget, selectCommit, selected, status, visible, x } from './store.js'
 import { photo } from './avatars.js'
+import { settings } from './settings.js'
 </script>
 
 <template>
@@ -10,8 +11,8 @@ import { photo } from './avatars.js'
       <span :style="{ width: REFS + 'px' }">Branch / Tag</span>
       <span :style="{ width: x(graphWidth) + 'px' }">Graph</span>
       <span class="subject">Commit message</span>
-      <span class="author">Author</span>
-      <span class="date">Waktu</span>
+      <span v-if="settings.showAuthor" class="author">Author</span>
+      <span v-if="settings.showDate" class="date">Waktu</span>
     </div>
     <div class="rows" :style="{ height: (commits.length + 1) * ROW + 'px' }">
       <svg class="graph" :style="{ left: REFS + 'px' }" :width="x(graphWidth)" :height="(commits.length + 1) * ROW">
@@ -67,8 +68,8 @@ import { photo } from './avatars.js'
         </span>
         <span :style="{ width: x(graphWidth) + 'px' }" class="gutter" />
         <span class="subject">{{ c.subject }}<small v-if="c.body" class="body">{{ c.body }}</small></span>
-        <span class="author"><img v-if="photo(c.email)" :src="photo(c.email)" class="avatar" alt="" loading="lazy" />{{ c.author }}</span>
-        <span class="date" :title="new Date(c.time * 1000).toLocaleString()">{{ ago(c.time) !== (commits[visible.first + k - 1] && ago(commits[visible.first + k - 1].time)) ? ago(c.time) : '' }}</span>
+        <span v-if="settings.showAuthor" class="author"><img v-if="photo(c.email)" :src="photo(c.email)" class="avatar" alt="" loading="lazy" />{{ c.author }}</span>
+        <span v-if="settings.showDate" class="date" :title="new Date(c.time * 1000).toLocaleString()">{{ ago(c.time) !== (commits[visible.first + k - 1] && ago(commits[visible.first + k - 1].time)) ? ago(c.time) : '' }}</span>
       </div>
     </div>
   </div>

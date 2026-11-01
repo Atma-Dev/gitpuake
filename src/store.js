@@ -13,7 +13,7 @@ import { parseBlame } from './blame.js'
 import { parseAvatarRows, parseRemote } from './forge.js'
 import { forgeAvatars } from './avatars.js'
 import { parseSig, readIdentity } from './identity.js'
-import { settings } from './settings.js'
+import { settings, stepZoom } from './settings.js'
 import { bisect, bisecting } from './flow.js'
 import { plan } from './rebaseplan.js'
 
@@ -39,6 +39,7 @@ export const busy = ref('')
 export const error = ref('')
 export const info = ref('') // success message, e.g. the URL of a new PR
 export const stashes = ref([])
+export const stashSel = ref(null) // stash shown in the panel: { ref, subject, files }
 export const remotes = ref([]) // [{ name, url }]
 export const tags = ref([]) // [{ name, oid, commit }]
 export const remoteForm = ref(null) // { name, url } while adding a remote
@@ -319,6 +320,7 @@ export const nameStatus = out =>
     return { code: code[0], path: paths.at(-1), from: paths[0] } // from: old path of a rename
   })
 export async function selectCommit(hash) {
+  stashSel.value = null
   multi.value = []
   selected.value = hash
   diff.value = null
@@ -346,11 +348,18 @@ watch(selected, async h => {
   if (selected.value === h) sig.value = s
 })
 
+export async function openStash(st) {
+  diff.value = fileView.value = compare.value = null
+  stashSel.value = { ...st, files: [] }
+  const files = nameStatus(await g('stash', 'show', '--name-status', st.ref))
+  if (stashSel.value?.ref === st.ref) stashSel.value.files = files
+}
 export async function showDiff(file, kind) {
   const p = file.path
   const ws = ignoreWs.value ? ['-w'] : []
   let text
   if (kind === 'commit') text = await g('show', ...ws, '--format=', '--diff-merges=first-parent', selected.value, '--', p)
+  else if (kind === 'stash') text = await g('diff', ...ws, stashSel.value.ref + '^1', stashSel.value.ref, '--', p)
   else if (kind === 'compare') text = await g('diff', ...ws, compare.value.a, compare.value.b, '--', p)
   else if (kind === 'staged') text = await g('diff', ...ws, '--cached', '--', p)
   else if (file.code === 'U' || file.code === 'C') text = await g('diff', '--no-index', '--', '/dev/null', p) // conflict: whole file with markers
@@ -375,7 +384,7 @@ export function toggleWs() {
 }
 // Untracked files have no index entry to patch, so they are staged whole.
 // A `-w` diff does not match the files byte for byte, so it can't be applied either.
-export const hunkable = computed(() => diff.value && diff.value.kind !== 'commit' && !'UC'.includes(diff.value.file.code) && !diff.value.ws)
+export const hunkable = computed(() => diff.value && !['commit', 'stash'].includes(diff.value.kind) && !'UC'.includes(diff.value.file.code) && !diff.value.ws)
 // Applies hunk `h` of the open diff, or only its picked lines when some are picked.
 export async function applyHunk(label, h, flags, undoFor) {
   const { file, kind, d } = diff.value
@@ -620,6 +629,23 @@ export async function removeRemoteBranch(b) {
   const hash = (await g('rev-parse', 'refs/remotes/' + b)).trim()
   run('Hapus branch remote', () => g('push', remote, '--delete', name), () => g('push', remote, `${hash}:refs/heads/${name}`))
 }
+// Right-click menu on a branch in the sidebar.
+export const branchMenu = ref(null) // { x, y, name, remote, input, value }
+export function openBranchMenu(e, name, remote = false) {
+  menu.value = dropMenu.value = null
+  branchMenu.value = { x: Math.min(e.clientX, innerWidth - 250), y: Math.min(e.clientY, innerHeight - 300), name, remote, input: null, value: name }
+}
+export async function branchDo(what) {
+  const { name, value } = branchMenu.value
+  const remote = firstRemote()
+  branchMenu.value = null
+  if (what === 'rename') {
+    const to = value.trim()
+    if (to && to !== name) run('Rename branch', () => g('branch', '-m', name, to), () => g('branch', '-m', to, name))
+  } else if (what === 'upstream') run('Set upstream', () => g('branch', '--set-upstream-to', `${remote}/${name}`, name), () => g('branch', '--unset-upstream', name))
+  else if (what === 'push') run('Push', () => g('push', '-u', remote, name))
+  else if (what === 'copy') navigator.clipboard.writeText(name)
+}
 export async function removeBranch(b) {
   if (!(await ask(`Hapus branch "${b}"?`, { kind: 'warning' }))) return
   const hash = (await g('rev-parse', b)).trim()
@@ -801,6 +827,11 @@ export const commands = computed(() => {
     { label: 'Terapkan patch…', run: idle(applyPatch) },
     ...(forge.value?.forge && head.value ? [{ label: forge.value.forge === 'gitlab' ? 'Buat merge request' : 'Buat pull request', run: idle(() => forgeEl.value?.openPRForm()) }] : []),
     { label: settings.treeView ? 'Daftar file: tampilan flat' : 'Daftar file: tampilan pohon folder', run: () => (settings.treeView = !settings.treeView) },
+    { label: 'Zoom: perbesar', keys: 'Ctrl+=', run: () => stepZoom(1) },
+    { label: 'Zoom: perkecil', keys: 'Ctrl+-', run: () => stepZoom(-1) },
+    { label: 'Zoom: normal (100%)', keys: 'Ctrl+0', run: () => (settings.zoom = 100) },
+    { label: (settings.showAuthor ? 'Sembunyikan' : 'Tampilkan') + ' kolom author', run: () => (settings.showAuthor = !settings.showAuthor) },
+    { label: (settings.showDate ? 'Sembunyikan' : 'Tampilkan') + ' kolom tanggal', run: () => (settings.showDate = !settings.showDate) },
     { label: 'Diff split', run: () => setDiffMode('split') },
     { label: 'Diff unified', run: () => setDiffMode('unified') },
     { label: 'Pengaturan', keys: 'Ctrl+,', run: () => (showSettings.value = true) },

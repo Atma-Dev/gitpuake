@@ -1,6 +1,6 @@
 <script setup>
 // Commit context menu and the branch drop menu.
-import { act, bisecting, bisectMark, bisectStart, cherryPickMany, commit, multi, planFor, copyHash, dropDo, dropMenu, goBack, head, menu, merge, openRebase, rebaseOnto, resetBack, resetTo, savePatch, shortRef, submitMenu, vFocus, x } from './store.js'
+import { branchDo, branchMenu, checkout, removeBranch, removeRemoteBranch, act, bisecting, bisectMark, bisectStart, cherryPickMany, commit, multi, planFor, copyHash, dropDo, dropMenu, goBack, head, menu, merge, openRebase, rebaseOnto, resetBack, resetTo, savePatch, shortRef, submitMenu, vFocus, x } from './store.js'
 </script>
 
 <template>
@@ -39,6 +39,30 @@ import { act, bisecting, bisectMark, bisectStart, cherryPickMany, commit, multi,
       <hr />
       <button @click="copyHash">Salin hash</button>
       <button @click="savePatch">Simpan sebagai patch…</button>
+    </template>
+  </div>
+  <div v-if="branchMenu" class="menu" :style="{ left: branchMenu.x + 'px', top: branchMenu.y + 'px' }" @click.stop>
+    <form v-if="branchMenu.input" @submit.prevent="branchDo('rename')">
+      <input v-model="branchMenu.value" v-focus placeholder="Nama baru" />
+    </form>
+    <template v-else>
+      <div class="menu-title"><code>{{ branchMenu.name }}</code></div>
+      <button v-if="branchMenu.name !== head || branchMenu.remote" @click="checkout(branchMenu.name, branchMenu.remote); branchMenu = null">Checkout</button>
+      <template v-if="branchMenu.name !== head || branchMenu.remote">
+        <button @click="merge(branchMenu.name); branchMenu = null">Merge ke {{ head || 'HEAD' }}</button>
+        <button @click="rebaseOnto(branchMenu.name); branchMenu = null">Rebase {{ head || 'HEAD' }} ke sini</button>
+      </template>
+      <hr />
+      <template v-if="!branchMenu.remote">
+        <button @click="branchMenu.input = true">Ganti nama…</button>
+        <button @click="branchDo('push')">Push dan set upstream</button>
+        <button @click="branchDo('upstream')">Set upstream ke remote dengan nama sama</button>
+      </template>
+      <button @click="branchDo('copy')">Salin nama</button>
+      <template v-if="branchMenu.name !== head || branchMenu.remote">
+        <hr />
+        <button class="danger" @click="(branchMenu.remote ? removeRemoteBranch : removeBranch)(branchMenu.name); branchMenu = null">{{ branchMenu.remote ? 'Hapus di remote' : 'Hapus' }}</button>
+      </template>
     </template>
   </div>
   <div v-if="dropMenu" class="menu" :style="{ left: dropMenu.x + 'px', top: dropMenu.y + 'px' }" @click.stop>
