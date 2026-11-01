@@ -35,7 +35,7 @@ function pick(e) {
 .pull-split button { border-radius: 4px 0 0 4px; }
 .pull-split small { color: var(--dim); }
 .pull-split select {
-  width: 22px;
+  width: 28px;
   appearance: none;
   -webkit-appearance: none;
   border: 1px solid var(--line);
@@ -43,7 +43,7 @@ function pick(e) {
   border-radius: 0 4px 4px 0;
   color: transparent;
   cursor: pointer;
-  background: var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23849282' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat center;
+  background: var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23849282' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat center / 14px 9px;
 }
 .pull-split select:hover:not(:disabled) { border-color: var(--accent); }
 .pull-split option { color: var(--fg); background: var(--bg2); }

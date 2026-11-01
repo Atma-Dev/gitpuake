@@ -122,7 +122,7 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
   border-radius: 4px;
   font: inherit;
   color: var(--fg);
-  background: var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23849282' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 7px center;
+  background: var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23849282' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 7px center;
 }
 .plan .into { color: #36d6c3; white-space: nowrap; }
 .plan code { color: var(--dim); }
@@ -295,9 +295,9 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .branch.current { color: var(--accent); font-weight: 600; }
 .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actions { display: none; gap: 2px; flex: none; }
-.actions button, .file button { padding: 0 6px; font-size: 11px; }
+.actions button, .file button { padding: 0 7px; font-size: 14px; line-height: 1.5; }
 .branch:hover .actions, .actions:focus-within { display: flex; }
-.merge-pick { appearance: none; -webkit-appearance: none; width: 30px; flex: none; text-align: center; text-overflow: clip; padding: 0 4px; font: inherit; font-size: 11px; color: var(--fg); background: var(--bg3); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+.merge-pick { appearance: none; -webkit-appearance: none; width: 34px; flex: none; text-align: center; text-overflow: clip; padding: 0 4px; font: inherit; font-size: 14px; line-height: 1.5; color: var(--fg); background: var(--bg3); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
 .merge-pick:hover { border-color: var(--accent); }
 .file button { visibility: hidden; }
 .file:hover button { visibility: visible; }
@@ -460,8 +460,8 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .sidebar summary:hover { background: var(--bg3); }
 .sidebar summary::-webkit-details-marker { display: none; }
 .sidebar summary h4 { margin: 0; padding: 9px 8px; justify-content: flex-start; gap: 10px; color: var(--fg); font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
-.sidebar summary h4::before { content: '▸'; color: var(--dim); font-size: 12px; width: 10px; }
-.sidebar details[open] > summary h4::before { content: '▾'; }
+.sidebar summary h4::before { content: ''; flex: none; width: 8px; height: 8px; margin: 0 4px 0 2px; border-right: 2px solid var(--dim); border-bottom: 2px solid var(--dim); transform: rotate(-45deg); transition: transform 0.12s; }
+.sidebar details[open] > summary h4::before { transform: translateY(-2px) rotate(45deg); }
 .sidebar summary h4 i { font-style: normal; color: var(--dim); font-size: 16px; width: 20px; text-align: center; }
 .sidebar summary h4 b { margin-left: auto; font-weight: 600; color: #4aa3ff; }
 .sidebar summary h4 button { margin-left: 6px; }
