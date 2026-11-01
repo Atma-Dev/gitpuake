@@ -8,12 +8,13 @@ import MergeEditor from './MergeEditor.vue'
 import PRView from './PRView.vue'
 import Palette from './Palette.vue'
 import Panel from './Panel.vue'
+import Reflog from './Reflog.vue'
 import RebasePlan from './RebasePlan.vue'
 import Settings from './Settings.vue'
 import Sidebar from './Sidebar.vue'
 import TopBar from './TopBar.vue'
 import Welcome from './Welcome.vue'
-import { abortOp, busy, commands, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, showSettings, status, undo } from './store.js'
+import { abortOp, busy, commands, commits, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, showReflog, showSettings, status, undo } from './store.js'
 
 onMounted(() => {
   refresh()
@@ -84,9 +85,11 @@ onMounted(() => {
     <Panel v-if="repo" />
 
     <CommitMenu />
+    <footer class="statusbar"><span>{{ repo }}</span><span class="spacer" /><span>{{ commits.length }} commit</span><span v-if="busy">{{ busy }}…</span></footer>
   </div>
 
   <Palette v-if="showPalette && repo" :commands="commands" @close="showPalette = false" />
+  <Reflog v-if="showReflog && repo" @close="showReflog = false" />
   <Settings v-if="showSettings && repo" :repo="repo" :run="run" @close="showSettings = false" />
   <div v-if="info" class="error info" @click="info = ''">
     <pre>{{ info }}</pre>

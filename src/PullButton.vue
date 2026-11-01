@@ -22,7 +22,7 @@ function pick(e) {
 <template>
   <span class="pull-split">
     <button :disabled="disabled" :title="MODES[mode].label" @click="emit('pull', MODES[mode].args)">
-      ↓ Pull<small v-if="mode !== 'merge'"> · {{ mode }}</small><b v-if="behind" class="count">{{ behind }}</b>
+      <i>↓</i>Pull<small v-if="mode !== 'merge'"> · {{ mode }}</small><b v-if="behind" class="count">{{ behind }}</b>
     </button>
     <select :value="mode" :disabled="disabled" aria-label="Cara pull" title="Pilih cara pull" @change="pick">
       <option v-for="(m, k) in MODES" :key="k" :value="k">{{ m.label }}</option>

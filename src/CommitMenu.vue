@@ -1,6 +1,6 @@
 <script setup>
 // Commit context menu and the branch drop menu.
-import { act, commit, copyHash, dropDo, dropMenu, goBack, head, menu, merge, openRebase, rebaseOnto, resetBack, resetTo, savePatch, shortRef, submitMenu, vFocus, x } from './store.js'
+import { act, cherryPickMany, commit, multi, planFor, copyHash, dropDo, dropMenu, goBack, head, menu, merge, openRebase, rebaseOnto, resetBack, resetTo, savePatch, shortRef, submitMenu, vFocus, x } from './store.js'
 </script>
 
 <template>
@@ -8,6 +8,12 @@ import { act, commit, copyHash, dropDo, dropMenu, goBack, head, menu, merge, ope
     <form v-if="menu.input" @submit.prevent="submitMenu">
       <input v-model="menu.value" v-focus :placeholder="menu.input === 'tag' ? 'Nama tag' : 'Nama branch baru'" />
     </form>
+    <template v-else-if="multi.length > 1">
+      <div class="menu-title">{{ multi.length }} commit dipilih</div>
+      <button @click="cherryPickMany">Cherry-pick ke {{ head || 'HEAD' }}</button>
+      <button @click="planFor('squash')">Squash jadi satu…</button>
+      <button class="danger" @click="planFor('drop')">Drop…</button>
+    </template>
     <template v-else>
       <div class="menu-title"><code>{{ menu.hash.slice(0, 7) }}</code></div>
       <button @click="act('Checkout', ['switch', '--detach', menu.hash], p => () => goBack(p))">Checkout commit ini</button>
@@ -18,6 +24,7 @@ import { act, commit, copyHash, dropDo, dropMenu, goBack, head, menu, merge, ope
       <button @click="act('Revert', ['revert', '--no-edit', menu.hash], p => resetBack(p.hash))">Revert commit</button>
       <hr />
       <button @click="rebaseOnto(menu.hash)">Rebase {{ head || 'HEAD' }} ke sini</button>
+      <button @click="planFor('reword')">Edit pesan commit…</button>
       <button @click="openRebase">Interactive rebase dari sini…</button>
       <hr />
       <button @click="resetTo('soft')">Reset {{ head || 'HEAD' }} ke sini · soft</button>

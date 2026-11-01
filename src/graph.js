@@ -1,9 +1,9 @@
 const SEP = '\x1f'
-export const LOG_FORMAT = '--format=' + ['%H', '%P', '%D', '%an', '%ae', '%at', '%s'].join('%x1f')
+export const LOG_FORMAT = '--format=' + ['%H', '%P', '%D', '%an', '%ae', '%at', '%s', '%b'].join('%x1f') + '%x1e'
 
 export function parseLog(out) {
-  return out.split('\n').filter(Boolean).map(line => {
-    const [hash, parents, refs, author, email, time, subject] = line.split(SEP)
+  return out.split('\x1e').map(r => r.replace(/^\n/, '')).filter(Boolean).map(line => {
+    const [hash, parents, refs, author, email, time, subject, body = ''] = line.split(SEP)
     return {
       hash,
       parents: parents ? parents.split(' ') : [],
@@ -12,6 +12,7 @@ export function parseLog(out) {
       email,
       time: +time,
       subject,
+      body: body.trim().split('\n').filter(Boolean).join(' | '),
     }
   })
 }

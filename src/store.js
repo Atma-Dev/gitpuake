@@ -94,14 +94,18 @@ export function path([a, b, kind], r) {
 }
 
 // ponytail: undo entries capture state when the action ran; git commands run outside the app can make them stale
-export const undos = ref([]) // [{ label, undo }], newest last
+export const undos = ref([]) // [{ label, undo, fn }], newest last
+export const redos = ref([]) // undone entries, cleared by any new undoable action
 
 export async function run(label, fn, undo) {
   busy.value = label
   error.value = ''
   try {
     await fn()
-    if (undo) undos.value = [...undos.value.slice(-19), { label, undo }]
+    if (undo) {
+      undos.value = [...undos.value.slice(-19), { label, undo, fn }]
+      redos.value = []
+    }
   } catch (e) {
     error.value = String(e)
   }
@@ -113,7 +117,16 @@ export function undo() {
   const u = undos.value.at(-1)
   if (!u || busy.value) return
   undos.value = undos.value.slice(0, -1)
+  redos.value = [...redos.value, u]
   run('Undo ' + u.label.toLowerCase(), u.undo)
+}
+
+export async function redo() {
+  const r = redos.value.at(-1)
+  if (!r || busy.value) return
+  const rest = redos.value.slice(0, -1)
+  await run(r.label, r.fn, r.undo)
+  redos.value = rest
 }
 
 export const headHash = async () => (await g('rev-parse', '-q', '--verify', 'HEAD')).trim()
@@ -275,6 +288,7 @@ export async function openPath(dir) {
     saveRecent([top, ...recent.value.filter(r => r !== top)].slice(0, 8))
     if (!tabs.value.includes(top)) saveTabs([...tabs.value, top])
     undos.value = undoStore[top] ?? []
+    redos.value = []
     query.value = ''
     selected.value = 'WIP'
     diff.value = fileView.value = plan.value = mergeView.value = null
@@ -302,6 +316,7 @@ export const nameStatus = out =>
     return { code: code[0], path: paths.at(-1), from: paths[0] } // from: old path of a rename
   })
 export async function selectCommit(hash) {
+  multi.value = []
   selected.value = hash
   diff.value = null
   fileView.value = null
@@ -523,8 +538,18 @@ export async function applyPatch() {
     run('Terapkan patch', () => g('apply', file), () => g('apply', '-R', file))
 }
 
+// Shift+click builds a multi-selection (for cherry-pick / squash / drop); a plain click clears it.
+export const multi = ref([])
+export function toggleMulti(hash) {
+  const base = multi.value.length || selected.value === 'WIP' ? multi.value : [selected.value]
+  multi.value = base.includes(hash) ? base.filter(h => h !== hash) : [...base, hash]
+}
+const picked = () => commits.value.filter(c => multi.value.includes(c.hash)).map(c => c.hash) // newest first
 export function openMenu(e, c) {
-  selectCommit(c.hash)
+  if (!multi.value.includes(c.hash)) {
+    multi.value = []
+    selectCommit(c.hash)
+  }
   menu.value = { x: Math.min(e.clientX, innerWidth - 240), y: Math.min(e.clientY, innerHeight - 470), hash: c.hash, input: null, value: '' }
 }
 // Runs a HEAD-changing action; `undoFor(prev)` builds its undo from the HEAD state before it ran.
@@ -544,18 +569,38 @@ export async function resetTo(mode) {
 }
 export const rebaseOnto = target => act('Rebase', ['rebase', '--autostash', target], p => resetBack(p.hash))
 
+export const showReflog = ref(false)
 export const plan = ref(null) // interactive rebase: { base, items (newest first), drag }
 export const planError = computed(() => plan.value && validate(plan.value.items))
 export async function openRebase() {
   const base = menu.value.hash
   menu.value = null
+  await openPlan(base, () => 'pick')
+}
+async function openPlan(base, actionOf, need = []) {
   const out = await g('log', '--format=%H%x1f%P%x1f%s', `${base}..HEAD`)
   const rows = out.split('\n').filter(Boolean).map(l => l.split('\x1f'))
   if (!rows.length) return (error.value = 'Tidak ada commit di atas commit ini untuk di-rebase.')
+  if (need.some(h => !rows.some(([r]) => r === h))) return (error.value = 'Commit yang dipilih harus ada di branch aktif.')
   if (rows.some(([, parents]) => parents.includes(' ')))
     return (error.value = 'Rentang ini berisi merge commit. Interactive rebase yang melewati merge belum didukung.')
   diff.value = null
-  plan.value = { base, drag: -1, items: rows.map(([hash, , subject]) => ({ hash, subject, action: 'pick', msg: subject })) }
+  plan.value = { base, drag: -1, items: rows.map(([hash, , subject]) => ({ hash, subject, action: actionOf(hash), msg: subject })) }
+}
+// Opens the rebase plan from the parent of the oldest picked commit, preset for reword / squash / drop.
+export async function planFor(kind) {
+  const hashes = multi.value.length > 1 ? picked() : [menu.value.hash]
+  menu.value = null
+  const oldest = hashes.at(-1)
+  const base = (await g('rev-parse', '-q', '--verify', oldest + '^').catch(() => '')).trim()
+  if (!base) return (error.value = 'Commit pertama (root) tidak bisa diubah lewat rebase.')
+  const action = h => (!hashes.includes(h) ? 'pick' : kind === 'squash' ? (h === oldest ? 'pick' : 'squash') : kind)
+  await openPlan(base, action, hashes)
+}
+export function cherryPickMany() {
+  const hashes = picked().reverse() // oldest first
+  multi.value = []
+  act('Cherry-pick', ['cherry-pick', ...hashes], p => resetBack(p.hash))
 }
 // squash/fixup fold into the nearest older commit that survives on its own
 export const foldTarget = i => plan.value.items.slice(i + 1).find(x => !['drop', 'squash', 'fixup'].includes(x.action))?.hash.slice(0, 7)
@@ -607,6 +652,14 @@ export async function merge(b, mode = 'merge') {
     },
     () => g('reset', '--merge'),
   )
+}
+// Deletes a branch on the remote; undo pushes the old tip back.
+export async function removeRemoteBranch(b) {
+  const remote = b.slice(0, b.indexOf('/'))
+  const name = b.slice(remote.length + 1)
+  if (!(await ask(`Hapus branch "${name}" di remote ${remote}? Ini mengubah remote, bukan hanya salinan lokal.`, { kind: 'warning' }))) return
+  const hash = (await g('rev-parse', 'refs/remotes/' + b)).trim()
+  run('Hapus branch remote', () => g('push', remote, '--delete', name), () => g('push', remote, `${hash}:refs/heads/${name}`))
 }
 export async function removeBranch(b) {
   if (!(await ask(`Hapus branch "${b}"?`, { kind: 'warning' }))) return
@@ -766,9 +819,12 @@ export const commands = computed(() => {
     { label: 'Stash perubahan', keys: 'Ctrl+Shift+S', run: idle(() => dirty.value && stash()) },
     { label: 'Pop stash teratas', run: idle(() => stashes.value.length && stashDo('pop', stashes.value[0])) },
     { label: 'Undo', keys: 'Ctrl+Z', run: idle(undo) },
+    { label: 'Redo', keys: 'Ctrl+Shift+Z', run: idle(redo) },
+    { label: 'Reflog…', run: () => (showReflog.value = true) },
     { label: 'Cari commit', keys: 'Ctrl+F', run: () => nextTick(() => searchEl.value?.focus()) },
     { label: 'Terapkan patch…', run: idle(applyPatch) },
     ...(forge.value?.forge && head.value ? [{ label: forge.value.forge === 'gitlab' ? 'Buat merge request' : 'Buat pull request', run: idle(() => forgeEl.value?.openPRForm()) }] : []),
+    { label: settings.treeView ? 'Daftar file: tampilan flat' : 'Daftar file: tampilan pohon folder', run: () => (settings.treeView = !settings.treeView) },
     { label: 'Diff split', run: () => setDiffMode('split') },
     { label: 'Diff unified', run: () => setDiffMode('unified') },
     { label: 'Pengaturan', keys: 'Ctrl+,', run: () => (showSettings.value = true) },

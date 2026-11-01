@@ -1,6 +1,7 @@
 <script setup>
 // Right panel: working tree and commit box, a compare, or commit details.
 import { amend, busy, commit, commitFiles, commits, compare, discard, discardAll, identity, msg, openMerge, path, resolve, selected, selectedCommit, showDiff, showSettings, sig, stage, stageAll, stashFile, status, unstage, unstageAll } from './store.js'
+import FileTree from './FileTree.vue'
 import { avatar } from './identity.js'
 import { settings } from './settings.js'
 </script>
@@ -10,11 +11,13 @@ import { settings } from './settings.js'
     <template v-if="selected === 'WIP'">
       <div v-if="status.conflicts.length" class="section conflicts">
         <h4>Conflict ({{ status.conflicts.length }})</h4>
-        <div v-for="f in status.conflicts" :key="f.path" class="file" title="Buka editor conflict" @click="openMerge(f)">
-          <span class="code C">!</span>
-          <span class="name" :title="f.path">{{ f.path }}</span>
-          <button @click.stop="resolve(f.path)">Tandai selesai</button>
-        </div>
+        <FileTree v-slot="{ f, label }" :files="status.conflicts">
+          <div class="file" title="Buka editor conflict" @click="openMerge(f)">
+            <span class="code C">!</span>
+            <span class="name" :title="f.path">{{ label }}</span>
+            <button @click.stop="resolve(f.path)">Tandai selesai</button>
+          </div>
+        </FileTree>
       </div>
       <div class="section">
         <h4>
@@ -24,22 +27,26 @@ import { settings } from './settings.js'
             <button @click="stageAll">Stage all</button>
           </span>
         </h4>
-        <div v-for="f in status.unstaged" :key="f.path" class="file" @click="showDiff(f, 'unstaged')">
-          <span class="code" :class="f.code">{{ f.code }}</span>
-          <span class="name" :title="f.path">{{ f.path }}</span>
-          <button title="Buang perubahan" @click.stop="discard(f)">✕</button>
-          <button title="Stash file ini saja" @click.stop="stashFile(f)">⊞</button>
-          <button @click.stop="stage(f.path)">Stage</button>
-        </div>
+        <FileTree v-slot="{ f, label }" :files="status.unstaged">
+          <div class="file" @click="showDiff(f, 'unstaged')">
+            <span class="code" :class="f.code">{{ f.code }}</span>
+            <span class="name" :title="f.path">{{ label }}</span>
+            <button title="Buang perubahan" @click.stop="discard(f)">✕</button>
+            <button title="Stash file ini saja" @click.stop="stashFile(f)">⊞</button>
+            <button @click.stop="stage(f.path)">Stage</button>
+          </div>
+        </FileTree>
       </div>
       <div class="section">
         <h4>Staged ({{ status.staged.length }}) <button v-if="status.staged.length" @click="unstageAll">Unstage all</button></h4>
-        <div v-for="f in status.staged" :key="f.path" class="file" @click="showDiff(f, 'staged')">
-          <span class="code" :class="f.code">{{ f.code }}</span>
-          <span class="name" :title="f.path">{{ f.path }}</span>
-          <button title="Stash file ini saja (staged dan unstaged)" @click.stop="stashFile(f)">⊞</button>
-          <button @click.stop="unstage(f.path)">Unstage</button>
-        </div>
+        <FileTree v-slot="{ f, label }" :files="status.staged">
+          <div class="file" @click="showDiff(f, 'staged')">
+            <span class="code" :class="f.code">{{ f.code }}</span>
+            <span class="name" :title="f.path">{{ label }}</span>
+            <button title="Stash file ini saja (staged dan unstaged)" @click.stop="stashFile(f)">⊞</button>
+            <button @click.stop="unstage(f.path)">Unstage</button>
+          </div>
+        </FileTree>
       </div>
       <div class="commit-box">
         <label class="amend"><input v-model="amend" type="checkbox" :disabled="!commits.length" /> Amend commit terakhir</label>
@@ -61,10 +68,12 @@ import { settings } from './settings.js'
           Esc atau klik commit lain untuk selesai
         </p>
         <h4>File berubah ({{ compare.files.length }})</h4>
-        <div v-for="f in compare.files" :key="f.path" class="file" @click="showDiff(f, 'compare')">
-          <span class="code" :class="f.code">{{ f.code }}</span>
-          <span class="name" :title="f.path">{{ f.path }}</span>
-        </div>
+        <FileTree v-slot="{ f, label }" :files="compare.files">
+          <div class="file" @click="showDiff(f, 'compare')">
+            <span class="code" :class="f.code">{{ f.code }}</span>
+            <span class="name" :title="f.path">{{ label }}</span>
+          </div>
+        </FileTree>
       </div>
     </template>
     <template v-else-if="selectedCommit">
@@ -77,10 +86,12 @@ import { settings } from './settings.js'
           <span :title="selectedCommit.email">{{ selectedCommit.author }}</span> · {{ new Date(selectedCommit.time * 1000).toLocaleString() }}
         </p>
         <h4>File ({{ commitFiles.length }})</h4>
-        <div v-for="f in commitFiles" :key="f.path" class="file" @click="showDiff(f, 'commit')">
-          <span class="code" :class="f.code">{{ f.code }}</span>
-          <span class="name" :title="f.path">{{ f.path }}</span>
-        </div>
+        <FileTree v-slot="{ f, label }" :files="commitFiles">
+          <div class="file" @click="showDiff(f, 'commit')">
+            <span class="code" :class="f.code">{{ f.code }}</span>
+            <span class="name" :title="f.path">{{ label }}</span>
+          </div>
+        </FileTree>
       </div>
     </template>
   </aside>

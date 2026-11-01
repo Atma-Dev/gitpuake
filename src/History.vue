@@ -1,6 +1,6 @@
 <script setup>
 // Commit graph with virtual scrolling (rows are positioned absolutely).
-import { REFS, ROW, ago, avatarColor, color, commits, compare, dirty, dragRef, draggablePill, dropOn, g, graphWidth, head, headCol, headRow, initials, matches, openMenu, path, pickPair, pills, rowTarget, selectCommit, selected, status, visible, x } from './store.js'
+import { REFS, multi, toggleMulti, ROW, ago, avatarColor, color, commits, compare, dirty, dragRef, draggablePill, dropOn, g, graphWidth, head, headCol, headRow, initials, matches, openMenu, path, pickPair, pills, rowTarget, selectCommit, selected, status, visible, x } from './store.js'
 import { avatar } from './identity.js'
 import { settings } from './settings.js'
 </script>
@@ -39,9 +39,9 @@ import { settings } from './settings.js'
         v-for="(c, k) in visible.list"
         :key="c.hash"
         class="row"
-        :class="{ sel: selected === c.hash || compare?.b === c.hash || compare?.a === c.hash, dim: matches && !matches.has(c.hash) }"
+        :class="{ sel: selected === c.hash || multi.includes(c.hash) || compare?.b === c.hash || compare?.a === c.hash, dim: matches && !matches.has(c.hash) }"
         :style="{ '--c': color(c.col), top: (visible.first + k + 1) * ROW + 'px' }"
-        @click="$event.ctrlKey || $event.metaKey ? pickPair(c.hash) : selectCommit(c.hash)"
+        @click="$event.shiftKey ? toggleMulti(c.hash) : $event.ctrlKey || $event.metaKey ? pickPair(c.hash) : selectCommit(c.hash)"
         @contextmenu.prevent="openMenu($event, c)"
         @dragover="dragRef && $event.preventDefault()"
         @drop="dropOn($event, rowTarget(c))"
@@ -62,9 +62,9 @@ import { settings } from './settings.js'
           </template>
         </span>
         <span :style="{ width: x(graphWidth) + 'px' }" class="gutter" />
-        <span class="subject">{{ c.subject }}</span>
+        <span class="subject">{{ c.subject }}<small v-if="c.body" class="body">{{ c.body }}</small></span>
         <span class="author"><img v-if="settings.avatars && avatar(c.email)" :src="avatar(c.email)" class="avatar" alt="" loading="lazy" />{{ c.author }}</span>
-        <span class="date" :title="new Date(c.time * 1000).toLocaleString()">{{ ago(c.time) }}</span>
+        <span class="date" :title="new Date(c.time * 1000).toLocaleString()">{{ ago(c.time) !== (commits[visible.first + k - 1] && ago(commits[visible.first + k - 1].time)) ? ago(c.time) : '' }}</span>
       </div>
     </div>
   </div>

@@ -1,9 +1,13 @@
 <script setup>
 // Branches, remotes, tags, stashes, forge and repo extras.
 import Forge from './Forge.vue'
-import { MERGE_MODES, addRemote, branches, checkout, closeTab, commit, commits, createBranch, deleteTag, dragRef, dropOn, error, fetchRemote, filter, firstRemote, forge, forgeEl, g, goBack, head, hideRef, info, jumpTo, merge, newBranch, newBranchAt, openPR, openPath, prevHead, pull, push, pushTag, rebaseOnto, refState, remoteForm, remotes, removeBranch, removeRemote, repo, run, selected, setFilter, soloRef, stashDo, stashes, tags, vFocus } from './store.js'
+import { MERGE_MODES, addRemote, branches, checkout, closeTab, commit, commits, createBranch, deleteTag, dragRef, dropOn, error, fetchRemote, filter, firstRemote, forge, forgeEl, g, goBack, head, hideRef, info, jumpTo, merge, newBranch, newBranchAt, openPR, openPath, prevHead, pull, push, pushTag, rebaseOnto, refState, remoteForm, remotes, removeBranch, removeRemote, removeRemoteBranch, repo, run, selected, setFilter, soloRef, stashDo, stashes, tags, vFocus } from './store.js'
 import { NO_FILTER } from './branchops.js'
 import SidebarExtras from './SidebarExtras.vue'
+import { ref } from 'vue'
+
+const q = ref('')
+const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
 </script>
 
 <template>
@@ -15,9 +19,11 @@ import SidebarExtras from './SidebarExtras.vue'
       Graph {{ filter.solo ? 'hanya ' + filter.solo.replace(/^refs\/(heads|remotes)\//, '') : 'tanpa ' + filter.hidden.length + ' branch' }}
       <button @click="setFilter(NO_FILTER)">Tampilkan semua</button>
     </p>
-    <h4>Local</h4>
+    <input v-model="q" class="side-filter" placeholder="Filter branch / tag" />
+    <details open>
+    <summary><h4>Local <b>{{ branches.local.length }}</b></h4></summary>
     <div
-      v-for="b in branches.local"
+      v-for="b in branches.local.filter(hit)"
       :key="b"
       class="branch"
       :class="{ current: b === head, ...refState('refs/heads/' + b) }"
@@ -46,10 +52,12 @@ import SidebarExtras from './SidebarExtras.vue'
         <button title="Hapus" @click="removeBranch(b)">✕</button>
       </span>
     </div>
-    <h4>
-      Remote
-      <button v-if="!remoteForm" title="Tambah remote" @click="remoteForm = { name: remotes.length ? '' : 'origin', url: '' }">+ Tambah</button>
-    </h4>
+    </details>
+    <details open>
+    <summary><h4>
+      Remote <b>{{ branches.remote.length }}</b>
+      <button v-if="!remoteForm" title="Tambah remote" @click.stop.prevent="remoteForm = { name: remotes.length ? '' : 'origin', url: '' }">+ Tambah</button>
+    </h4></summary>
     <form v-if="remoteForm" class="remote-form" @submit.prevent="addRemote" @keydown.esc="remoteForm = null">
       <input v-model="remoteForm.name" v-focus placeholder="Nama, misalnya origin" />
       <input v-model="remoteForm.url" placeholder="git@github.com:user/repo.git" />
@@ -68,7 +76,7 @@ import SidebarExtras from './SidebarExtras.vue'
         </span>
       </div>
       <div
-        v-for="b in branches.remote.filter(b => b.startsWith(r.name + '/'))"
+        v-for="b in branches.remote.filter(b => b.startsWith(r.name + '/') && hit(b))"
         :key="b"
         class="branch nested"
         :class="refState('refs/remotes/' + b)"
@@ -86,21 +94,23 @@ import SidebarExtras from './SidebarExtras.vue'
             <option v-for="(l, k) in MERGE_MODES" :key="k" :value="k">{{ l }}</option>
           </select>
           <button title="Rebase branch aktif ke branch ini" @click="rebaseOnto(b)">⤴</button>
+          <button title="Hapus branch di remote" @click="removeRemoteBranch(b)">✕</button>
         </span>
       </div>
     </template>
-    <template v-if="tags.length">
-      <h4>Tag</h4>
-      <div v-for="t in tags" :key="t.name" class="branch" @click="jumpTo(t.commit)">
+    </details>
+    <details v-if="tags.length" open>
+      <summary><h4>Tag <b>{{ tags.length }}</b></h4></summary>
+      <div v-for="t in tags.filter(t => hit(t.name))" :key="t.name" class="branch" @click="jumpTo(t.commit)">
         <span class="name" :title="t.name">◆ {{ t.name }}</span>
         <span class="actions">
           <button :title="'Push tag ke ' + firstRemote()" @click.stop="pushTag(t)">↑</button>
           <button title="Hapus tag" @click.stop="deleteTag(t)">✕</button>
         </span>
       </div>
-    </template>
-    <template v-if="stashes.length">
-      <h4>Stash</h4>
+    </details>
+    <details v-if="stashes.length" open>
+      <summary><h4>Stash <b>{{ stashes.length }}</b></h4></summary>
       <div v-for="s in stashes" :key="s.ref" class="branch">
         <span class="name" :title="s.ref + ': ' + s.subject">{{ s.subject }}</span>
         <span class="actions">
@@ -109,7 +119,7 @@ import SidebarExtras from './SidebarExtras.vue'
           <button title="Hapus" @click="stashDo('drop', s)">✕</button>
         </span>
       </div>
-    </template>
+    </details>
     <Forge
       ref="forgeEl"
       :repo="repo"

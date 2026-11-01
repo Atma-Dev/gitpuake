@@ -1,4 +1,7 @@
 import { test, expect, git, write, read } from './fixture.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 const subjects = page => page.locator('.history .row:not(.wip) .subject')
 const undoBtn = page => page.getByRole('button', { name: /Undo/ })
@@ -76,6 +79,73 @@ test('command palette checks out a branch', async ({ app, repo }) => {
   await page.keyboard.press('Control+p')
   await page.getByPlaceholder('Ketik perintah').fill('checkout feature')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.toolbar .head')).toHaveText('⎇ feature')
+  await expect(page.locator('.toolbar .head')).toHaveText('feature')
   expect(git(repo, 'branch', '--show-current').trim()).toBe('feature')
+})
+
+const commitFile = (repo, name) => {
+  write(repo, name, name)
+  git(repo, 'add', '.')
+  git(repo, 'commit', '-q', '-m', name)
+}
+
+test('shift-click two commits and squash them through the rebase plan', async ({ app, repo }) => {
+  commitFile(repo, 'b.txt')
+  commitFile(repo, 'c.txt')
+  const page = await app()
+  await subjects(page).filter({ hasText: 'c.txt' }).click()
+  await subjects(page).filter({ hasText: 'b.txt' }).click({ modifiers: ['Shift'] })
+  await subjects(page).filter({ hasText: 'b.txt' }).click({ button: 'right' })
+  await page.getByRole('button', { name: 'Squash jadi satu…' }).click()
+  await page.getByRole('button', { name: 'Mulai rebase' }).click()
+  await expect(subjects(page)).toHaveText([/^b\.txt/, 'first commit'])
+  expect(git(repo, 'rev-list', '--count', 'HEAD').trim()).toBe('2')
+})
+
+test('reword an older commit from the context menu', async ({ app, repo }) => {
+  commitFile(repo, 'b.txt')
+  commitFile(repo, 'c.txt')
+  const page = await app()
+  await subjects(page).filter({ hasText: 'b.txt' }).click({ button: 'right' })
+  await page.getByRole('button', { name: 'Edit pesan commit…' }).click()
+  await page.getByLabel('Judul commit baru').fill('renamed b')
+  await page.getByRole('button', { name: 'Mulai rebase' }).click()
+  await expect(subjects(page)).toHaveText(['c.txt', 'renamed b', 'first commit'])
+})
+
+test('reflog lists HEAD moves', async ({ app }) => {
+  const page = await app()
+  await page.keyboard.press('Control+P')
+  await page.getByPlaceholder(/perintah/i).fill('reflog')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.reflog li').first()).toContainText('commit')
+})
+
+test('tree view groups files under their folder', async ({ app, repo }) => {
+  fs.mkdirSync(path.join(repo, 'src'))
+  write(repo, 'src/x.txt', 'x')
+  write(repo, 'a.txt', 'changed\n')
+  const page = await app()
+  await page.keyboard.press('Control+P')
+  await page.getByPlaceholder(/perintah/i).fill('pohon')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.dirhead', { hasText: 'src' })).toBeVisible()
+  await expect(page.locator('.file', { hasText: 'x.txt' }).locator('.name')).toHaveText('x.txt')
+})
+
+test('delete a branch on the remote', async ({ app, repo }) => {
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'gitpuake-remote-'))
+  git(remote, 'init', '-q', '--bare')
+  git(repo, 'remote', 'add', 'origin', remote)
+  git(repo, 'push', '-q', 'origin', 'main:main', 'main:old')
+  git(repo, 'fetch', '-q')
+  const page = await app()
+  const row = page.locator('.branch.nested', { hasText: 'old' })
+  await row.hover()
+  await row.getByTitle('Hapus branch di remote').click()
+  await expect(row).toHaveCount(0)
+  expect(git(remote, 'branch', '--list').includes('old')).toBe(false)
+  await page.getByRole('button', { name: /Undo/ }).click()
+  await expect(page.locator('.branch.nested', { hasText: 'old' })).toHaveCount(1)
+  fs.rmSync(remote, { recursive: true, force: true })
 })

@@ -5,6 +5,7 @@ const DEFAULTS = {
   fetchMinutes: 5, // 0 = auto-fetch off
   diffMode: localStorage.getItem('diffMode') || 'split', // older builds kept this under its own key
   avatars: false, // Gravatar: sends a hash of each author email to gravatar.com
+  treeView: false, // file lists grouped by folder
   profiles: [], // [{ label, name, email, signingkey }]
 }
 let saved = {}

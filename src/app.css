@@ -44,7 +44,7 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 
 .app {
   display: grid;
-  grid-template: 38px 44px auto minmax(0, 1fr) / 230px minmax(0, 1fr) 340px;
+  grid-template: 38px 56px auto minmax(0, 1fr) 22px / 230px minmax(0, 1fr) 340px;
   height: 100vh;
 }
 .sidebar, .main, .panel { grid-row: 4; }
@@ -333,6 +333,8 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
   cursor: pointer;
   white-space: nowrap;
 }
+.row { background: color-mix(in srgb, var(--c) 7%, transparent); }
+.subject .body { margin-left: 12px; color: var(--dim); }
 .row:hover { background: color-mix(in srgb, var(--c) 10%, transparent); }
 .row.sel { background: color-mix(in srgb, var(--c) 24%, transparent); box-shadow: inset 3px 0 var(--c); }
 .row.wip { color: var(--dim); font-style: italic; }
@@ -451,3 +453,20 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 }
 .error pre { margin: 0; white-space: pre-wrap; font-size: 12px; }
 .error small { color: var(--dim); }
+
+.sidebar summary { cursor: pointer; list-style: none; }
+.sidebar summary::-webkit-details-marker { display: none; }
+.sidebar summary h4::before { content: '▾'; margin-right: 4px; }
+.sidebar details:not([open]) > summary h4::before { content: '▸'; }
+.sidebar summary h4 b { margin-left: auto; margin-right: 6px; font-weight: 400; color: var(--accent); }
+.sidebar summary h4 button { margin-left: 0; }
+.side-filter { width: 100%; box-sizing: border-box; margin-top: 8px; }
+
+.toolbar button, .pull-split button { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 48px; font-size: 11px; line-height: 1.1; padding: 4px 8px; background: none; border-color: transparent; color: var(--dim); }
+.toolbar button:hover:not(:disabled) { color: var(--fg); }
+.toolbar button i, .pull-split button i { font-style: normal; font-size: 17px; color: var(--fg); }
+.toolbar button:disabled i { color: var(--dim); }
+.pull-split button { border-radius: 4px; }
+.crumb { display: flex; flex-direction: column; line-height: 1.15; }
+.crumb small { color: var(--dim); font-size: 10px; }
+.statusbar { grid-column: 1 / -1; grid-row: 5; display: flex; gap: 14px; align-items: center; padding: 0 10px; font-size: 11px; color: var(--dim); background: var(--bg2); border-top: 1px solid #000; }
