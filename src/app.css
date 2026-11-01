@@ -456,13 +456,21 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .error pre { margin: 0; white-space: pre-wrap; font-size: 12px; }
 .error small { color: var(--dim); }
 
-.sidebar summary { cursor: pointer; list-style: none; }
+.sidebar summary { cursor: pointer; list-style: none; border-radius: 4px; }
+.sidebar summary:hover { background: var(--bg3); }
 .sidebar summary::-webkit-details-marker { display: none; }
-.sidebar summary h4::before { content: '▾'; margin-right: 4px; }
-.sidebar details:not([open]) > summary h4::before { content: '▸'; }
-.sidebar summary h4 b { margin-left: auto; margin-right: 6px; font-weight: 400; color: var(--accent); }
-.sidebar summary h4 button { margin-left: 0; }
-.side-filter { width: 100%; box-sizing: border-box; margin-top: 8px; }
+.sidebar summary h4 { margin: 0; padding: 7px 6px; justify-content: flex-start; gap: 8px; color: var(--fg); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+.sidebar summary h4::before { content: '▸'; color: var(--dim); font-size: 10px; width: 8px; }
+.sidebar details[open] > summary h4::before { content: '▾'; }
+.sidebar summary h4 i { font-style: normal; color: var(--dim); width: 16px; text-align: center; }
+.sidebar summary h4 b { margin-left: auto; font-weight: 600; color: #4aa3ff; }
+.sidebar summary h4 button { margin-left: 6px; }
+.viewing { margin: 2px 4px 8px; color: var(--fg); font-size: 12px; }
+.viewing b { color: #4aa3ff; margin-left: 4px; }
+.side-filter { position: relative; display: block; margin: 0 0 8px; }
+.side-filter input { width: 100%; box-sizing: border-box; padding-right: 26px; }
+.side-filter span { position: absolute; right: 8px; top: 50%; transform: translateY(-52%); color: var(--dim); pointer-events: none; }
+.new-branch { margin-bottom: 8px; }
 
 .toolbar button, .pull-split button { display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 48px; font-size: 11px; line-height: 1.1; padding: 4px 8px; background: none; border-color: transparent; color: var(--dim); }
 .toolbar button:hover:not(:disabled) { color: var(--fg); }

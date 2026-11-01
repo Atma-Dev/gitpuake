@@ -141,6 +141,7 @@ test('delete a branch on the remote', async ({ app, repo }) => {
   git(repo, 'push', '-q', 'origin', 'main:main', 'main:old')
   git(repo, 'fetch', '-q')
   const page = await app()
+  await page.getByText('Remote', { exact: false }).first().click() // sections start collapsed
   const row = page.locator('.branch.nested', { hasText: 'old' })
   await row.hover()
   await row.getByTitle('Hapus branch di remote').click()

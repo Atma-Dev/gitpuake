@@ -4,11 +4,18 @@ import Forge from './Forge.vue'
 import { MERGE_MODES, addRemote, branches, checkout, closeTab, commit, commits, createBranch, deleteTag, dragRef, dropOn, error, fetchRemote, filter, firstRemote, forge, forgeEl, g, goBack, head, hideRef, info, jumpTo, merge, newBranch, newBranchAt, openPR, openPath, prevHead, pull, push, pushTag, rebaseOnto, refState, remoteForm, remotes, removeBranch, removeRemote, removeRemoteBranch, repo, run, selected, setFilter, soloRef, stashDo, stashes, tags, vFocus } from './store.js'
 import { NO_FILTER } from './branchops.js'
 import SidebarExtras from './SidebarExtras.vue'
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { FLOW, flowFinish, flowKind, flowStart } from './store.js'
 
 const flow = ref({ kind: 'feature', name: '' })
 const startFlow = () => flowStart(flow.value.kind, flow.value.name).then(() => (flow.value.name = ''))
+
+// which sections are expanded, remembered; like GitKraken only Local starts open
+const open = reactive({ local: true, ...JSON.parse(localStorage.getItem('sideOpen') || '{}') })
+const toggle = (k, e) => {
+  open[k] = e.target.open
+  localStorage.setItem('sideOpen', JSON.stringify(open))
+}
 
 const q = ref('')
 const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
@@ -16,6 +23,8 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
 
 <template>
   <aside class="sidebar">
+    <p class="viewing">Viewing <b>{{ commits.length }}</b></p>
+    <label class="side-filter"><input v-model="q" placeholder="Filter branch / tag" /><span aria-hidden="true">⌕</span></label>
     <form class="new-branch" @submit.prevent="createBranch">
       <input v-model="newBranch" :placeholder="selected === 'WIP' ? 'Branch baru dari HEAD' : 'Branch baru dari ' + selected.slice(0, 7)" />
     </form>
@@ -23,9 +32,8 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
       Graph {{ filter.solo ? 'hanya ' + filter.solo.replace(/^refs\/(heads|remotes)\//, '') : 'tanpa ' + filter.hidden.length + ' branch' }}
       <button @click="setFilter(NO_FILTER)">Tampilkan semua</button>
     </p>
-    <input v-model="q" class="side-filter" placeholder="Filter branch / tag" />
-    <details open>
-    <summary><h4>Local <b>{{ branches.local.length }}</b></h4></summary>
+    <details :open="open.local" @toggle="toggle('local', $event)">
+    <summary><h4><i>⌂</i>Local <b>{{ branches.local.length }}</b></h4></summary>
     <div
       v-for="b in branches.local.filter(hit)"
       :key="b"
@@ -57,9 +65,9 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
       </span>
     </div>
     </details>
-    <details open>
+    <details :open="open.remote" @toggle="toggle('remote', $event)">
     <summary><h4>
-      Remote <b>{{ branches.remote.length }}</b>
+      <i>☁</i>Remote <b>{{ branches.remote.length }}</b>
       <button v-if="!remoteForm" title="Tambah remote" @click.stop.prevent="remoteForm = { name: remotes.length ? '' : 'origin', url: '' }">+ Tambah</button>
     </h4></summary>
     <form v-if="remoteForm" class="remote-form" @submit.prevent="addRemote" @keydown.esc="remoteForm = null">
@@ -103,8 +111,8 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
       </div>
     </template>
     </details>
-    <details v-if="tags.length" open>
-      <summary><h4>Tag <b>{{ tags.length }}</b></h4></summary>
+    <details v-if="tags.length" :open="open.tag" @toggle="toggle('tag', $event)">
+      <summary><h4><i>◆</i>Tag <b>{{ tags.length }}</b></h4></summary>
       <div v-for="t in tags.filter(t => hit(t.name))" :key="t.name" class="branch" @click="jumpTo(t.commit)">
         <span class="name" :title="t.name">◆ {{ t.name }}</span>
         <span class="actions">
@@ -113,8 +121,8 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
         </span>
       </div>
     </details>
-    <details v-if="stashes.length" open>
-      <summary><h4>Stash <b>{{ stashes.length }}</b></h4></summary>
+    <details v-if="stashes.length" :open="open.stash" @toggle="toggle('stash', $event)">
+      <summary><h4><i>⊟</i>Stash <b>{{ stashes.length }}</b></h4></summary>
       <div v-for="s in stashes" :key="s.ref" class="branch">
         <span class="name" :title="s.ref + ': ' + s.subject">{{ s.subject }}</span>
         <span class="actions">
@@ -125,8 +133,8 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
       </div>
     </details>
     <button v-if="flowKind" class="primary" @click="flowFinish">Finish {{ head }}</button>
-    <details class="gitflow">
-      <summary><h4>Gitflow</h4></summary>
+    <details class="gitflow" :open="open.flow" @toggle="toggle('flow', $event)">
+      <summary><h4><i>⑂</i>Gitflow</h4></summary>
       <form class="remote-form" @submit.prevent="startFlow">
         <select v-model="flow.kind" aria-label="Jenis branch gitflow"><option v-for="k in FLOW" :key="k" :value="k">{{ k }}</option></select>
         <input v-model="flow.name" placeholder="Nama (misalnya login-page)" />
