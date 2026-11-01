@@ -12,9 +12,10 @@ import Reflog from './Reflog.vue'
 import RebasePlan from './RebasePlan.vue'
 import Settings from './Settings.vue'
 import Sidebar from './Sidebar.vue'
+import Terminal from './Terminal.vue'
 import TopBar from './TopBar.vue'
 import Welcome from './Welcome.vue'
-import { abortOp, busy, commands, commits, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, showReflog, showSettings, status, undo } from './store.js'
+import { abortOp, bisect, bisecting, busy, commands, commits, compare, continueOp, diff, diffMode, dropMenu, error, fileView, forgeEl, forget, info, keyName, mainEl, menu, mergeView, onScroll, openPath, operation, plan, prView, recent, refresh, repo, run, searchEl, selectCommit, selected, setDiffMode, showPalette, showReflog, showSettings, showTerminal, status, undo } from './store.js'
 
 onMounted(() => {
   refresh()
@@ -64,6 +65,16 @@ onMounted(() => {
       <button class="primary" :disabled="status.conflicts.length > 0 || !!busy" @click="continueOp">Continue</button>
     </div>
 
+    <div v-if="bisecting" class="bisect-banner">
+      <b>Bisect sedang berjalan.</b>
+      <span>Uji commit yang sedang di-checkout, lalu tandai hasilnya.</span>
+      <span class="spacer" />
+      <button :disabled="!!busy" @click="bisect('good')">Good</button>
+      <button :disabled="!!busy" @click="bisect('bad')">Bad</button>
+      <button :disabled="!!busy" @click="bisect('skip')">Skip</button>
+      <button :disabled="!!busy" @click="bisect('reset')">Selesai (reset)</button>
+    </div>
+
     <main ref="mainEl" class="main" v-if="repo" @scroll.passive="onScroll">
       <RebasePlan v-if="plan" />
       <MergeEditor v-else-if="mergeView" />
@@ -89,6 +100,7 @@ onMounted(() => {
   </div>
 
   <Palette v-if="showPalette && repo" :commands="commands" @close="showPalette = false" />
+  <Terminal v-if="showTerminal && repo" />
   <Reflog v-if="showReflog && repo" @close="showReflog = false" />
   <Settings v-if="showSettings && repo" :repo="repo" :run="run" @close="showSettings = false" />
   <div v-if="info" class="error info" @click="info = ''">

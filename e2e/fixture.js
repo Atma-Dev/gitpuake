@@ -41,6 +41,8 @@ async function backend(cmd, a) {
   switch (cmd) {
     case 'git':
       return exec('git', a.repo, a.args, a.input)
+    case 'shell':
+      return exec('sh', a.repo, ['-c', a.line]).catch(e => String(e.message))
     case 'gh':
     case 'glab':
       throw new Error(`${cmd}: No such file or directory (os error 2)`) // not installed

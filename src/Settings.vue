@@ -98,6 +98,14 @@ async function removeProfile(i) {
           <button :class="{ on: settings.diffMode === 'unified' }" @click="settings.diffMode = 'unified'">Unified</button>
         </span>
       </div>
+      <div class="row-set">
+        Tema
+        <select v-model="settings.theme" aria-label="Tema">
+          <option value="dark">Gelap</option>
+          <option value="light">Terang</option>
+          <option value="auto">Ikuti sistem</option>
+        </select>
+      </div>
       <label class="amend avatar-opt">
         <input v-model="settings.avatars" type="checkbox" />
         <span>

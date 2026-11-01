@@ -22,13 +22,13 @@ import { settings } from './settings.js'
         </template>
         <template v-for="(c, k) in visible.list" :key="c.hash">
           <line v-if="c.pills.length" x1="0" :x2="x(c.col)" :y1="(visible.first + k + 1.5) * ROW" :y2="(visible.first + k + 1.5) * ROW" :stroke="color(c.col)" stroke-width="2" opacity="0.6" />
-          <circle v-if="c.parents.length > 1" :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="5" :fill="color(c.col)" stroke="#0f1813" stroke-width="2" />
+          <circle v-if="c.parents.length > 1" :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="5" :fill="color(c.col)" stroke="var(--bg)" stroke-width="2" />
           <g v-else>
             <circle :cx="x(c.col)" :cy="(visible.first + k + 1.5) * ROW" r="11" :fill="avatarColor(c.author)" :stroke="selected === c.hash ? '#fff' : color(c.col)" stroke-width="2.5" />
             <text :x="x(c.col)" :y="(visible.first + k + 1.5) * ROW" dy=".35em" text-anchor="middle" class="ini">{{ initials(c.author) }}</text>
           </g>
         </template>
-        <circle v-if="dirty" :cx="x(headCol)" :cy="ROW / 2" r="9" fill="#0f1813" stroke="#8a90a0" stroke-width="2" stroke-dasharray="3 3" />
+        <circle v-if="dirty" :cx="x(headCol)" :cy="ROW / 2" r="9" fill="var(--bg)" stroke="#8a90a0" stroke-width="2" stroke-dasharray="3 3" />
       </svg>
       <div class="row wip" :class="{ sel: selected === 'WIP' }" @click="selectCommit('WIP')">
         <span class="refs" :style="{ width: REFS + 'px' }" />

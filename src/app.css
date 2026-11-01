@@ -1,5 +1,7 @@
 :root {
   /* murky river at night: mud, croc scales, bone teeth, amber eye */
+  --bg0: #09100c;
+  --bg1: #111b15;
   --bg: #0f1813;
   --bg2: #142019;
   --bg3: #1d2b22;
@@ -55,7 +57,7 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
   align-items: flex-end;
   gap: 2px;
   padding: 0 8px;
-  background: #09100c;
+  background: var(--bg0);
   overflow-x: auto;
 }
 .tabs .home { align-self: center; margin-right: 6px; }
@@ -66,7 +68,7 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
   max-width: 240px;
   height: 32px;
   border-radius: 6px 6px 0 0;
-  background: #111b15;
+  background: var(--bg1);
   color: var(--dim);
 }
 .tab.on { background: var(--bg2); color: var(--bone); box-shadow: inset 0 2px var(--accent); }
@@ -470,3 +472,26 @@ h4 button { padding: 1px 6px; font-size: 11px; text-transform: none; }
 .crumb { display: flex; flex-direction: column; line-height: 1.15; }
 .crumb small { color: var(--dim); font-size: 10px; }
 .statusbar { grid-column: 1 / -1; grid-row: 5; display: flex; gap: 14px; align-items: center; padding: 0 10px; font-size: 11px; color: var(--dim); background: var(--bg2); border-top: 1px solid #000; }
+
+/* light theme: same roles, daylight over the river */
+:root[data-theme='light'] {
+  --bg0: #e6e8dc;
+  --bg1: #ecefe3;
+  --bg: #f7f8f1;
+  --bg2: #eef0e4;
+  --bg3: #e1e5d4;
+  --line: #cdd3bf;
+  --fg: #1f2a22;
+  --bone: #3b3a22;
+  --dim: #667466;
+  --accent: #b87408;
+  color-scheme: light;
+}
+:root[data-theme='light'] .hljs-keyword, :root[data-theme='light'] .hljs-selector-tag { color: #9a5b00; }
+:root[data-theme='light'] .hljs-string, :root[data-theme='light'] .hljs-addition { color: #4c6a12; }
+:root[data-theme='light'] .hljs-title, :root[data-theme='light'] .hljs-section { color: #1c6f86; }
+:root[data-theme='light'] .hljs-comment { color: #7d887a; }
+:root[data-theme='light'] .error { background: #fbe3df; }
+:root[data-theme='light'] .error.info { background: #e4f3d8; }
+
+.bisect-banner { grid-row: 3; grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg3); border-bottom: 1px solid var(--line); }

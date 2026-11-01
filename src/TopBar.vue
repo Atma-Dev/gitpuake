@@ -1,7 +1,7 @@
 <script setup>
 // Repository tabs and the toolbar.
 import PullButton from './PullButton.vue'
-import { ago, applyPatch, busy, closeTab, commit, diff, dirty, fetchAll, forge, forgeEl, goHome, head, headTrack, lastFetch, matches, nextMatch, openPath, openRepo, pull, push, query, redo, redos, repo, searchEl, showPalette, showSettings, stash, stashDo, stashes, tabs, undo, undos } from './store.js'
+import { ago, applyPatch, busy, closeTab, commit, diff, dirty, fetchAll, forge, forgeEl, goHome, head, headTrack, lastFetch, matches, nextMatch, openPath, openRepo, pull, push, query, redo, redos, repo, searchEl, showPalette, showSettings, showTerminal, stash, stashDo, stashes, tabs, undo, undos } from './store.js'
 import logo from './assets/puake.svg'
 import { settings } from './settings.js'
 </script>
@@ -33,6 +33,7 @@ import { settings } from './settings.js'
       <button :disabled="!!busy || !stashes.length" @click="stashDo('pop', stashes[0])"><i>⊟</i>Pop</button>
       <button :disabled="!!busy" title="Terapkan file .patch atau .diff" @click="applyPatch"><i>⎘</i>Patch</button>
       <button v-if="forge?.forge && head" :disabled="!!busy" title="Push branch ini lalu buat pull request" @click="forgeEl.openPRForm()"><i>⇪</i>{{ forge.forge === 'gitlab' ? 'MR' : 'PR' }}</button>
+      <button title="Terminal (Ctrl+`)" @click="showTerminal = !showTerminal"><i>&gt;_</i>Terminal</button>
       <span class="spacer" />
       <span v-if="busy" class="busy">{{ busy }}…</span>
       <input

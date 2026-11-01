@@ -1,6 +1,6 @@
 <script setup>
 // Commit context menu and the branch drop menu.
-import { act, cherryPickMany, commit, multi, planFor, copyHash, dropDo, dropMenu, goBack, head, menu, merge, openRebase, rebaseOnto, resetBack, resetTo, savePatch, shortRef, submitMenu, vFocus, x } from './store.js'
+import { act, bisecting, bisectMark, bisectStart, cherryPickMany, commit, multi, planFor, copyHash, dropDo, dropMenu, goBack, head, menu, merge, openRebase, rebaseOnto, resetBack, resetTo, savePatch, shortRef, submitMenu, vFocus, x } from './store.js'
 </script>
 
 <template>
@@ -30,6 +30,12 @@ import { act, cherryPickMany, commit, multi, planFor, copyHash, dropDo, dropMenu
       <button @click="resetTo('soft')">Reset {{ head || 'HEAD' }} ke sini · soft</button>
       <button @click="resetTo('mixed')">Reset {{ head || 'HEAD' }} ke sini · mixed</button>
       <button class="danger" @click="resetTo('hard')">Reset {{ head || 'HEAD' }} ke sini · hard</button>
+      <hr />
+      <template v-if="bisecting">
+        <button @click="bisectMark('good', menu.hash)">Bisect: commit ini good</button>
+        <button @click="bisectMark('bad', menu.hash)">Bisect: commit ini bad</button>
+      </template>
+      <button v-else @click="bisectStart(menu.hash)">Bisect: mulai, commit ini bad</button>
       <hr />
       <button @click="copyHash">Salin hash</button>
       <button @click="savePatch">Simpan sebagai patch…</button>

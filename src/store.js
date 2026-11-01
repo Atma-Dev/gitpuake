@@ -185,6 +185,56 @@ export const continueOp = () =>
     operation.value === 'merge' ? g('commit', '--no-edit') : g('-c', 'core.editor=true', operation.value, '--continue'),
   )
 
+// Bisect: the banner marks HEAD; the commit menu starts a session and marks any commit.
+export const bisecting = ref(false)
+export const bisect = (...args) =>
+  run('Bisect', async () => {
+    const out = (await g('bisect', ...args)).trim()
+    if (out) info.value = out.split('\n').slice(0, 6).join('\n')
+  })
+export const bisectStart = hash => {
+  menu.value = null
+  run('Bisect', async () => {
+    await g('bisect', 'start')
+    await g('bisect', 'bad', hash)
+    info.value = 'Bisect dimulai. Klik kanan commit lama yang masih bagus, lalu pilih "Bisect: commit ini good".'
+  })
+}
+export const bisectMark = (kind, hash) => {
+  menu.value = null
+  bisect(kind, hash)
+}
+
+// Gitflow: feature/ release/ hotfix/ branches, merged --no-ff on finish.
+// ponytail: finish has no undo (multi-step) and stops on a merge conflict; resolve it, then finish again.
+export const FLOW = ['feature', 'release', 'hotfix']
+export const flowKind = computed(() => FLOW.find(k => head.value?.startsWith(k + '/')))
+const trunk = () => (branches.value.local.includes('main') ? 'main' : 'master')
+export async function flowStart(kind, name) {
+  name = name.trim().replace(/\s+/g, '-')
+  if (!name) return
+  if (!branches.value.local.includes('develop')) {
+    if (!(await ask(`Branch develop belum ada. Buat dari ${trunk()}?`, { kind: 'info' }))) return
+    await run('Gitflow', () => g('branch', 'develop', trunk()))
+  }
+  newBranchAt(`${kind}/${name}`, [kind === 'hotfix' ? trunk() : 'develop'])
+}
+export async function flowFinish() {
+  const kind = flowKind.value
+  const br = head.value
+  if (dirty.value) return (error.value = 'Commit atau stash perubahanmu dulu sebelum menyelesaikan ' + br + '.')
+  const targets = kind === 'feature' ? ['develop'] : [trunk(), 'develop']
+  if (!(await ask(`Selesaikan ${br}? Branch ini di-merge --no-ff ke ${targets.join(' lalu ')}, lalu dihapus.`, { kind: 'warning' }))) return
+  run('Gitflow finish', async () => {
+    for (const t of targets) {
+      await g('switch', t)
+      await g('merge', '--no-ff', '--no-edit', br)
+      if (kind !== 'feature' && t === trunk()) await g('tag', '-a', br.slice(kind.length + 1), '-m', br)
+    }
+    await g('branch', '-d', br)
+  })
+}
+
 export const query = ref('')
 export const searchEl = ref(null)
 export const matches = computed(() => {
@@ -234,6 +284,7 @@ export async function refresh() {
       return { ref, subject }
     })
     operation.value = Object.values(OPS)[ops.findIndex(o => o.trim())] ?? amOp
+    bisecting.value = await g('bisect', 'log').then(() => true, () => false) // fails outside a bisect session
     const rows = refs.split('\n').map(l => l.split('\x1f')).filter(([r]) => r && !r.endsWith('/HEAD'))
     const track = {}
     for (const [r, t] of rows) {
@@ -570,6 +621,7 @@ export async function resetTo(mode) {
 export const rebaseOnto = target => act('Rebase', ['rebase', '--autostash', target], p => resetBack(p.hash))
 
 export const showReflog = ref(false)
+export const showTerminal = ref(false)
 export const plan = ref(null) // interactive rebase: { base, items (newest first), drag }
 export const planError = computed(() => plan.value && validate(plan.value.items))
 export async function openRebase() {
@@ -820,6 +872,9 @@ export const commands = computed(() => {
     { label: 'Pop stash teratas', run: idle(() => stashes.value.length && stashDo('pop', stashes.value[0])) },
     { label: 'Undo', keys: 'Ctrl+Z', run: idle(undo) },
     { label: 'Redo', keys: 'Ctrl+Shift+Z', run: idle(redo) },
+    { label: 'Terminal', keys: 'Ctrl+`', run: () => (showTerminal.value = !showTerminal.value) },
+    { label: 'Tema: ' + { auto: 'ikuti sistem', dark: 'gelap', light: 'terang' }[settings.theme] + ' (ganti)', run: () => (settings.theme = { auto: 'dark', dark: 'light', light: 'auto' }[settings.theme]) },
+    ...(bisecting.value ? [{ label: 'Bisect: selesai (reset)', run: idle(() => bisect('reset')) }] : []),
     { label: 'Reflog…', run: () => (showReflog.value = true) },
     { label: 'Cari commit', keys: 'Ctrl+F', run: () => nextTick(() => searchEl.value?.focus()) },
     { label: 'Terapkan patch…', run: idle(applyPatch) },

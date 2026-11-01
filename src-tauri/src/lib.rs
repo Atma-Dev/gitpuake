@@ -34,6 +34,33 @@ async fn git(repo: String, args: Vec<String>, input: Option<String>) -> Result<S
     exec("git", &repo, &args, input)
 }
 
+// Runs one line in the user's login shell inside `repo` (the built-in terminal) and returns stdout + stderr.
+// ponytail: no pty, so interactive programs (vim, ssh prompts) don't work; stdin is closed and
+// a command that never exits keeps the line running. Upgrade to a pty crate if that matters.
+fn run_shell(repo: &str, line: &str) -> Result<String, String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let out = Command::new(shell)
+        .current_dir(repo)
+        .args(["-l", "-c", line])
+        .env("TERM", "dumb")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        let code = out.status.code().map_or("signal".to_string(), |c| c.to_string());
+        text.push_str(&format!("\n[exit {code}]"));
+    }
+    Ok(text)
+}
+
+#[tauri::command]
+async fn shell(repo: String, line: String) -> Result<String, String> {
+    run_shell(&repo, &line)
+}
+
 // GitHub CLI, for pull requests; it uses the user's own `gh auth login`.
 #[tauri::command]
 async fn gh(repo: String, args: Vec<String>) -> Result<String, String> {
@@ -134,14 +161,14 @@ async fn file_base64(repo: String, path: String, rev: Option<String>) -> Result<
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![git, gh, glab, open_url, read_file, write_file, file_base64])
+        .invoke_handler(tauri::generate_handler![git, shell, gh, glab, open_url, read_file, write_file, file_base64])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_IMAGE, blob_spec, encode_capped, is_web_url, repo_file};
+    use super::{MAX_IMAGE, blob_spec, encode_capped, is_web_url, repo_file, run_shell};
 
     #[test]
     fn image_bytes_are_capped_and_encoded() {
@@ -158,6 +185,12 @@ mod tests {
         assert!(!is_web_url("file:///etc/passwd"));
         assert!(!is_web_url("javascript:alert(1)"));
         assert!(!is_web_url("https://x.org/a b"));
+    }
+
+    #[test]
+    fn shell_returns_both_streams_and_exit_code() {
+        let out = run_shell(".", "echo out; echo err >&2; exit 3").unwrap();
+        assert!(out.contains("out") && out.contains("err") && out.contains("[exit 3]"));
     }
 
     #[test]

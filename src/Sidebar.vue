@@ -5,6 +5,10 @@ import { MERGE_MODES, addRemote, branches, checkout, closeTab, commit, commits, 
 import { NO_FILTER } from './branchops.js'
 import SidebarExtras from './SidebarExtras.vue'
 import { ref } from 'vue'
+import { FLOW, flowFinish, flowKind, flowStart } from './store.js'
+
+const flow = ref({ kind: 'feature', name: '' })
+const startFlow = () => flowStart(flow.value.kind, flow.value.name).then(() => (flow.value.name = ''))
 
 const q = ref('')
 const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
@@ -119,6 +123,15 @@ const hit = b => b.toLowerCase().includes(q.value.trim().toLowerCase())
           <button title="Hapus" @click="stashDo('drop', s)">✕</button>
         </span>
       </div>
+    </details>
+    <button v-if="flowKind" class="primary" @click="flowFinish">Finish {{ head }}</button>
+    <details class="gitflow">
+      <summary><h4>Gitflow</h4></summary>
+      <form class="remote-form" @submit.prevent="startFlow">
+        <select v-model="flow.kind" aria-label="Jenis branch gitflow"><option v-for="k in FLOW" :key="k" :value="k">{{ k }}</option></select>
+        <input v-model="flow.name" placeholder="Nama (misalnya login-page)" />
+        <button class="primary" :disabled="!flow.name.trim()">Start</button>
+      </form>
     </details>
     <Forge
       ref="forgeEl"

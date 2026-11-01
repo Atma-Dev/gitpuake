@@ -149,3 +149,46 @@ test('delete a branch on the remote', async ({ app, repo }) => {
   await expect(page.locator('.branch.nested', { hasText: 'old' })).toHaveCount(1)
   fs.rmSync(remote, { recursive: true, force: true })
 })
+
+test('terminal runs a command in the repo', async ({ app }) => {
+  const page = await app()
+  await page.keyboard.press('Control+`')
+  await page.getByPlaceholder('perintah shell di folder repo').fill('cat a.txt')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.term-log pre')).toContainText('two')
+})
+
+test('bisect: start, mark and reset', async ({ app, repo }) => {
+  for (const n of ['b', 'c', 'd']) commitFile(repo, n + '.txt')
+  const page = await app()
+  await subjects(page).filter({ hasText: 'd.txt' }).click({ button: 'right' })
+  await page.getByRole('button', { name: 'Bisect: mulai, commit ini bad' }).click()
+  await expect(page.locator('.bisect-banner')).toBeVisible()
+  await subjects(page).filter({ hasText: 'first commit' }).click({ button: 'right' })
+  await page.getByRole('button', { name: 'Bisect: commit ini good' }).click()
+  await expect(page.locator('.error.info')).toContainText('Bisecting')
+  await page.locator('.bisect-banner').getByRole('button', { name: 'Selesai (reset)' }).click()
+  await expect(page.locator('.bisect-banner')).toHaveCount(0)
+})
+
+test('gitflow: start a feature and finish it', async ({ app, repo }) => {
+  const page = await app()
+  await page.getByText('Gitflow').click()
+  await page.getByPlaceholder(/Nama \(misalnya/).fill('login')
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
+  await expect.poll(() => git(repo, 'branch', '--show-current').trim()).toBe('feature/login')
+  commitFile(repo, 'login.txt')
+  await page.reload()
+  await page.getByRole('button', { name: 'Finish feature/login' }).click()
+  await expect.poll(() => git(repo, 'branch', '--show-current').trim()).toBe('develop')
+  expect(git(repo, 'branch', '--list', 'feature/*').trim()).toBe('')
+  expect(git(repo, 'log', '-1', '--format=%P', 'develop').trim().split(' ')).toHaveLength(2) // --no-ff merge commit
+})
+
+test('theme switches to light from the palette', async ({ app }) => {
+  const page = await app()
+  await page.keyboard.press('Control+P')
+  await page.getByPlaceholder(/perintah/i).fill('tema')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+})
