@@ -78,6 +78,7 @@ test('command palette checks out a branch', async ({ app, repo }) => {
   const page = await app()
   await page.keyboard.press('Control+p')
   await page.getByPlaceholder('Ketik perintah').fill('checkout feature')
+  await expect(page.getByRole('option', { name: 'Checkout feature' })).toBeVisible() // branches load after the first paint
   await page.keyboard.press('Enter')
   await expect(page.locator('.toolbar .head')).toHaveText('feature')
   expect(git(repo, 'branch', '--show-current').trim()).toBe('feature')
